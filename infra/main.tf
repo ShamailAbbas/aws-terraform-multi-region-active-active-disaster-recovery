@@ -326,7 +326,7 @@ EOF
   )
 
 
-
+  depends_on = [aws_rds_cluster.primary_cluster, aws_rds_cluster.secondary_cluster]
 
 }
 
@@ -594,6 +594,8 @@ npm install
 npm start
 EOF
   )
+
+  depends_on = [aws_rds_cluster.primary_cluster, aws_rds_cluster.secondary_cluster]
 
 }
 
