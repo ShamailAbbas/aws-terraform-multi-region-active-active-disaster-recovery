@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Multi-Region Media App</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    h1 { color: #2c3e50; }
+    input, button { margin: 5px 0; padding: 5px; }
+    .media-list { margin-top: 20px; }
+    .media-item { margin-bottom: 10px; }
+  </style>
+</head>
+<body>
+  <h1>Multi-Region Media App</h1>
+
+  <h2>Upload Media</h2>
+  <input type="file" id="fileInput">
+  <button onclick="uploadMedia()">Upload</button>
+
+  <h2>Media List</h2>
+  <button onclick="fetchMedia()">Refresh List</button>
+  <div class="media-list" id="mediaList"></div>
+
+  <h2>Sessions (DynamoDB)</h2>
+  <input type="text" id="sessionData" placeholder="Session Data JSON">
+  <button onclick="createSession()">Create Session</button>
+  <input type="text" id="sessionId" placeholder="Session ID">
+  <button onclick="getSession()">Get Session</button>
+  <pre id="sessionResult"></pre>
+
+  <script>
+    const API_BASE = ''; // leave blank if same domain as Node.js backend
+
+    async function uploadMedia() {
+      const fileInput = document.getElementById('fileInput');
+      if (!fileInput.files[0]) {
+        alert('Select a file first!');
+        return;
+      }
+      const formData = new FormData();
+      formData.append('file', fileInput.files[0]);
+
+      const res = await fetch(`${API_BASE}/media`, {
+        method: 'POST',
+        body: formData
+      });
+
+      const data = await res.json();
+      alert(data.message || 'Uploaded!');
+      fetchMedia();
+    }
+
+    async function fetchMedia() {
+      const res = await fetch(`${API_BASE}/media`);
+      const media = await res.json();
+      const listDiv = document.getElementById('mediaList');
+      listDiv.innerHTML = '';
+      media.forEach(item => {
+        const div = document.createElement('div');
+        div.className = 'media-item';
+        div.innerHTML = `
+          <strong>${item.filename}</strong> (Region: ${item.region})
+          <button onclick="downloadMedia('${item.s3_key}')">Download</button>
+        `;
+        listDiv.appendChild(div);
+      });
+    }
+
+    async function downloadMedia(key) {
+      const res = await fetch(`${API_BASE}/media/${key}`);
+      if (!res.ok) return alert('Failed to download');
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = key.split('-').slice(1).join('-'); // remove UUID prefix
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    }
+
+    async function createSession() {
+      const dataInput = document.getElementById('sessionData').value;
+      let json;
+      try { json = JSON.parse(dataInput); } catch(e){ return alert('Invalid JSON'); }
+
+      const res = await fetch(`${API_BASE}/session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(json)
+      });
+      const data = await res.json();
+      alert(`Session created: ${data.sessionId}`);
+    }
+
+    async function getSession() {
+      const id = document.getElementById('sessionId').value;
+      if (!id) return alert('Enter session ID');
+      const res = await fetch(`${API_BASE}/session/${id}`);
+      const data = await res.json();
+      document.getElementById('sessionResult').textContent = JSON.stringify(data, null, 2);
+    }
+
+    // Initial fetch
+    fetchMedia();
+  </script>
+</body>
+</html>
