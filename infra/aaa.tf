@@ -123,6 +123,12 @@ resource "aws_security_group" "primary_sg" {
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+  ingress {
+    from_port   = 5000
+    to_port     = 5000
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
   ingress {
     from_port   = 443
@@ -174,6 +180,38 @@ resource "aws_iam_role_policy_attachment" "ec2_attach" {
   role       = aws_iam_role.ec2_role.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
+# --- EC2 S3 ACCESS POLICY ---
+resource "aws_iam_policy" "ec2_s3_access" {
+  name        = "${var.project_name}-ec2-s3-access"
+  description = "EC2 read/write access to primary and secondary S3 buckets"
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:ListBucket"
+        ],
+        Resource = [
+          aws_s3_bucket.primary_assets.arn,
+          "${aws_s3_bucket.primary_assets.arn}/*",
+          aws_s3_bucket.secondary_assets.arn,
+          "${aws_s3_bucket.secondary_assets.arn}/*"
+        ]
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ec2_s3_access_attach" {
+  role       = aws_iam_role.ec2_role.name
+  policy_arn = aws_iam_policy.ec2_s3_access.arn
+}
+
 
 resource "aws_iam_role_policy_attachment" "ec2_dynamodb" {
   role       = aws_iam_role.ec2_role.name
@@ -255,23 +293,7 @@ resource "aws_launch_template" "primary_backend" {
 #!/bin/bash
 # Update and install dependencies
 sudo apt update -y
-sudo apt install -y nginx git curl build-essential
-
-# Setup index.html for Nginx
-cat > /var/www/html/index.html <<HTML
-<!DOCTYPE html>
-<html>
-<head><title>Multi-Region App</title></head>
-<body>
-  <h1>Primary Region (US-EAST-1)</h1>
-  <p>Instance: $(hostname)</p>
-  <p>Region: ${var.primary_region}</p>
-  <p>Status: ACTIVE</p>
-</body>
-</html>
-HTML
-
-sudo systemctl restart nginx
+sudo apt install -y  git curl build-essential
 
 # Install Node.js (latest LTS)
 curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
@@ -284,9 +306,9 @@ cd aws-terraform-multi-region-active-active-disaster-recovery/backend
 
 # Create .env file with environment variables
 cat > .env <<ENV
-REGION=primary
-PRIMARY_DB_HOST=multi-region-app-primary-cluster.cluster-c692sqi4ubm8.us-east-1.rds.amazonaws.com
-SECONDARY_DB_HOST=multi-region-app-secondary-cluster.cluster-cz6ea6u6km8.us-east-2.rds.amazonaws.com
+REGION=us-east-1
+PRIMARY_DB_HOST=${aws_rds_cluster.primary_cluster.endpoint}
+SECONDARY_DB_HOST=${aws_rds_cluster.secondary_cluster.endpoint}
 DB_USER=adminuser
 DB_PASSWORD=YourSecurePassword123!
 DB_NAME=appdb
@@ -328,7 +350,7 @@ resource "aws_lb_target_group" "primary_tg" {
     enabled             = true
     healthy_threshold   = 2
     interval            = 30
-    path                = "/"
+    path                = "/health"
     port                = "traffic-port"
     protocol            = "HTTP"
     timeout             = 5
@@ -452,6 +474,12 @@ resource "aws_security_group" "secondary_sg" {
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+  ingress {
+    from_port   = 5000
+    to_port     = 5000
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
   ingress {
     from_port   = 443
@@ -521,95 +549,112 @@ resource "aws_rds_cluster_instance" "secondary_instance_2" {
 
 # --- EC2 + ALB ---
 
-# resource "aws_launch_template" "secondary_backend" {
-#   provider               = aws.secondary
-#   name_prefix            = "${var.project_name}-secondary-backend"
-#   image_id               = var.ami_secondary
-#   instance_type          = var.instance_type
-#   vpc_security_group_ids = [aws_security_group.secondary_sg.id]
-#   iam_instance_profile {
-#     name = aws_iam_instance_profile.ec2_profile.name
-#   }
+resource "aws_launch_template" "secondary_backend" {
+  provider               = aws.secondary
+  name_prefix            = "${var.project_name}-secondary-backend"
+  image_id               = var.ami_secondary
+  instance_type          = var.instance_type
+  vpc_security_group_ids = [aws_security_group.secondary_sg.id]
+  iam_instance_profile {
+    name = aws_iam_instance_profile.ec2_profile.name
+  }
 
-#   user_data = base64encode(<<EOF
-# #!/bin/bash
-# sudo apt update -y
-# sudo apt install -y nginx
-# cat > /var/www/html/index.html <<HTML
-# <!DOCTYPE html>
-# <html>
-# <head><title>Multi-Region App</title></head>
-# <body>
-#   <h1>Secondary Region (US-WEST-2)</h1>
-#   <p>Instance: $(hostname)</p>
-#   <p>Region: ${var.secondary_region}</p>
-#   <p>Status: ACTIVE</p>
-# </body>
-# </html>
-# HTML
-# sudo systemctl restart nginx
-# EOF
-#   )
-# }
+  user_data = base64encode(<<EOF
+#!/bin/bash
+# Update and install dependencies
+sudo apt update -y
+sudo apt install -y  git curl build-essential
 
-# resource "aws_lb" "secondary_alb" {
-#   provider           = aws.secondary
-#   name               = "${var.project_name}-secondary-alb"
-#   internal           = false
-#   load_balancer_type = "application"
-#   subnets            = [aws_subnet.secondary_public_a.id, aws_subnet.secondary_public_b.id]
-#   security_groups    = [aws_security_group.secondary_sg.id]
-# }
+# Install Node.js (latest LTS)
+curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+sudo apt install -y nodejs
 
-# resource "aws_lb_target_group" "secondary_tg" {
-#   provider = aws.secondary
-#   name     = "${var.project_name}-secondary-tg"
-#   port     = 80
-#   protocol = "HTTP"
-#   vpc_id   = aws_vpc.secondary_vpc.id
+# Clone the repository
+cd /home/ubuntu
+git clone https://github.com/ShamailAbbas/aws-terraform-multi-region-active-active-disaster-recovery.git
+cd aws-terraform-multi-region-active-active-disaster-recovery/backend
 
-#   health_check {
-#     enabled             = true
-#     healthy_threshold   = 2
-#     interval            = 30
-#     path                = "/"
-#     port                = "traffic-port"
-#     protocol            = "HTTP"
-#     timeout             = 5
-#     unhealthy_threshold = 2
-#   }
-# }
+# Create .env file with environment variables
+cat > .env <<ENV
+REGION=us-east-2
+PRIMARY_DB_HOST=${aws_rds_cluster.primary_cluster.endpoint}
+SECONDARY_DB_HOST=${aws_rds_cluster.secondary_cluster.endpoint}
+DB_USER=adminuser
+DB_PASSWORD=YourSecurePassword123!
+DB_NAME=appdb
+S3_BUCKET_PRIMARY=multi-region-app-assets-primary
+S3_BUCKET_SECONDARY=multi-region-app-assets-secondary
+DYNAMO_TABLE=multi-region-app-sessions
+ENV
 
-# resource "aws_lb_listener" "secondary_listener" {
-#   provider          = aws.secondary
-#   load_balancer_arn = aws_lb.secondary_alb.arn
-#   port              = 5000
-#   protocol          = "HTTP"
-#   default_action {
-#     type             = "forward"
-#     target_group_arn = aws_lb_target_group.secondary_tg.arn
-#   }
-# }
+# Install Node.js dependencies
+npm install
 
-# resource "aws_autoscaling_group" "secondary_asg" {
-#   provider         = aws.secondary
-#   desired_capacity = 2
-#   max_size         = 5
-#   min_size         = 2
-#   launch_template {
-#     id      = aws_launch_template.secondary_backend.id
-#     version = "$Latest"
-#   }
-#   vpc_zone_identifier = [aws_subnet.secondary_public_a.id, aws_subnet.secondary_public_b.id]
-#   target_group_arns   = [aws_lb_target_group.secondary_tg.arn]
-#   depends_on          = [aws_lb_listener.secondary_listener]
+# Start the Node.js backend app
+npm start
+EOF
+  )
 
-#   tag {
-#     key                 = "Name"
-#     value               = "${var.project_name}-secondary-instance"
-#     propagate_at_launch = true
-#   }
-# }
+}
+
+resource "aws_lb" "secondary_alb" {
+  provider           = aws.secondary
+  name               = "${var.project_name}-secondary-alb"
+  internal           = false
+  load_balancer_type = "application"
+  subnets            = [aws_subnet.secondary_public_a.id, aws_subnet.secondary_public_b.id]
+  security_groups    = [aws_security_group.secondary_sg.id]
+}
+
+resource "aws_lb_target_group" "secondary_tg" {
+  provider = aws.secondary
+  name     = "${var.project_name}-secondary-tg"
+  port     = 5000
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.secondary_vpc.id
+
+  health_check {
+    enabled             = true
+    healthy_threshold   = 2
+    interval            = 30
+    path                = "/health"
+    port                = "traffic-port"
+    protocol            = "HTTP"
+    timeout             = 5
+    unhealthy_threshold = 2
+  }
+}
+
+resource "aws_lb_listener" "secondary_listener" {
+  provider          = aws.secondary
+  load_balancer_arn = aws_lb.secondary_alb.arn
+  port              = 80
+  protocol          = "HTTP"
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.secondary_tg.arn
+  }
+}
+
+resource "aws_autoscaling_group" "secondary_asg" {
+  provider         = aws.secondary
+  desired_capacity = 2
+  max_size         = 5
+  min_size         = 2
+  launch_template {
+    id      = aws_launch_template.secondary_backend.id
+    version = "$Latest"
+  }
+  vpc_zone_identifier = [aws_subnet.secondary_public_a.id, aws_subnet.secondary_public_b.id]
+  target_group_arns   = [aws_lb_target_group.secondary_tg.arn]
+  depends_on          = [aws_lb_listener.secondary_listener]
+
+  tag {
+    key                 = "Name"
+    value               = "${var.project_name}-secondary-instance"
+    propagate_at_launch = true
+  }
+}
 
 ##################################################
 # DYNAMODB GLOBAL TABLE (Session Storage)
@@ -833,10 +878,10 @@ output "primary_alb_dns" {
   description = "Primary region ALB DNS"
 }
 
-# output "secondary_alb_dns" {
-#   value       = aws_lb.secondary_alb.dns_name
-#   description = "Secondary region ALB DNS"
-# }
+output "secondary_alb_dns" {
+  value       = aws_lb.secondary_alb.dns_name
+  description = "Secondary region ALB DNS"
+}
 
 output "primary_db_endpoint" {
   value       = aws_rds_cluster.primary_cluster.endpoint

@@ -15,13 +15,13 @@ app.use(express.json());
 app.use(cors());
 
 // ---------- ENV VARIABLES ----------
-const REGION = process.env.REGION || 'primary';
-const DB_HOST = REGION=='primary'?process.env.PRIMARY_DB_HOST:process.env.SECONDARY_DB_HOST;
+const REGION = process.env.REGION
+const DB_HOST = REGION=='us-east-1'?process.env.PRIMARY_DB_HOST:process.env.SECONDARY_DB_HOST;
 const DB_USER = process.env.DB_USER;
 const DB_PASSWORD = process.env.DB_PASSWORD;
 const DB_NAME = process.env.DB_NAME;
 const S3_BUCKET_PRIMARY = process.env.S3_BUCKET_PRIMARY;
-const S3_BUCKET_LOCAL = REGION=='primary'?process.env.S3_BUCKET_PRIMARY:process.env.S3_BUCKET_SECONDARY;
+const S3_BUCKET_LOCAL = REGION=='us-east-1'?process.env.S3_BUCKET_PRIMARY:process.env.S3_BUCKET_SECONDARY;
 const DYNAMO_TABLE = process.env.DYNAMO_TABLE;
 
 // ---------- POSTGRESQL POOL ----------
