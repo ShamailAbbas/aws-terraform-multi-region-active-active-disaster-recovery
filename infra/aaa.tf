@@ -241,98 +241,131 @@ resource "aws_rds_cluster_instance" "primary_instance_2" {
 
 # --- EC2 BACKEND + ALB ---
 
-# resource "aws_launch_template" "primary_backend" {
-#   provider      = aws.primary
-#   name_prefix   = "${var.project_name}-primary-backend"
-#   image_id      = var.ami_primary
-#   instance_type = var.instance_type
-#   iam_instance_profile {
-#     name = aws_iam_instance_profile.ec2_profile.name
-#   }
-#   vpc_security_group_ids = [aws_security_group.primary_sg.id]
+resource "aws_launch_template" "primary_backend" {
+  provider      = aws.primary
+  name_prefix   = "${var.project_name}-primary-backend"
+  image_id      = var.ami_primary
+  instance_type = var.instance_type
+  iam_instance_profile {
+    name = aws_iam_instance_profile.ec2_profile.name
+  }
+  vpc_security_group_ids = [aws_security_group.primary_sg.id]
 
-#   user_data = base64encode(<<EOF
-# #!/bin/bash
-# sudo apt update -y
-# sudo apt install -y nginx
-# cat > /var/www/html/index.html <<HTML
-# <!DOCTYPE html>
-# <html>
-# <head><title>Multi-Region App</title></head>
-# <body>
-#   <h1>Primary Region (US-EAST-1)</h1>
-#   <p>Instance: $(hostname)</p>
-#   <p>Region: ${var.primary_region}</p>
-#   <p>Status: ACTIVE</p>
-# </body>
-# </html>
-# HTML
-# sudo systemctl restart nginx
-# EOF
-#   )
+  user_data = base64encode(<<EOF
+#!/bin/bash
+# Update and install dependencies
+sudo apt update -y
+sudo apt install -y nginx git curl build-essential
+
+# Setup index.html for Nginx
+cat > /var/www/html/index.html <<HTML
+<!DOCTYPE html>
+<html>
+<head><title>Multi-Region App</title></head>
+<body>
+  <h1>Primary Region (US-EAST-1)</h1>
+  <p>Instance: $(hostname)</p>
+  <p>Region: ${var.primary_region}</p>
+  <p>Status: ACTIVE</p>
+</body>
+</html>
+HTML
+
+sudo systemctl restart nginx
+
+# Install Node.js (latest LTS)
+curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+sudo apt install -y nodejs
+
+# Clone the repository
+cd /home/ubuntu
+git clone https://github.com/ShamailAbbas/aws-terraform-multi-region-active-active-disaster-recovery.git
+cd aws-terraform-multi-region-active-active-disaster-recovery/backend
+
+# Create .env file with environment variables
+cat > .env <<ENV
+REGION=primary
+PRIMARY_DB_HOST=multi-region-app-primary-cluster.cluster-c692sqi4ubm8.us-east-1.rds.amazonaws.com
+SECONDARY_DB_HOST=multi-region-app-secondary-cluster.cluster-cz6ea6u6km8.us-east-2.rds.amazonaws.com
+DB_USER=adminuser
+DB_PASSWORD=YourSecurePassword123!
+DB_NAME=appdb
+S3_BUCKET_PRIMARY=multi-region-app-assets-primary
+S3_BUCKET_SECONDARY=multi-region-app-assets-secondary
+DYNAMO_TABLE=multi-region-app-sessions
+ENV
+
+# Install Node.js dependencies
+npm install
+
+# Start the Node.js backend app
+npm start
+EOF
+  )
 
 
 
-# }
 
-# resource "aws_lb" "primary_alb" {
-#   provider           = aws.primary
-#   name               = "${var.project_name}-primary-alb"
-#   internal           = false
-#   load_balancer_type = "application"
-#   subnets            = [aws_subnet.primary_public_a.id, aws_subnet.primary_public_b.id]
-#   security_groups    = [aws_security_group.primary_sg.id]
-# }
+}
 
-# resource "aws_lb_target_group" "primary_tg" {
-#   provider = aws.primary
-#   name     = "${var.project_name}-primary-tg"
-#   port     = 80
-#   protocol = "HTTP"
-#   vpc_id   = aws_vpc.primary_vpc.id
+resource "aws_lb" "primary_alb" {
+  provider           = aws.primary
+  name               = "${var.project_name}-primary-alb"
+  internal           = false
+  load_balancer_type = "application"
+  subnets            = [aws_subnet.primary_public_a.id, aws_subnet.primary_public_b.id]
+  security_groups    = [aws_security_group.primary_sg.id]
+}
 
-#   health_check {
-#     enabled             = true
-#     healthy_threshold   = 2
-#     interval            = 30
-#     path                = "/"
-#     port                = "traffic-port"
-#     protocol            = "HTTP"
-#     timeout             = 5
-#     unhealthy_threshold = 2
-#   }
-# }
+resource "aws_lb_target_group" "primary_tg" {
+  provider = aws.primary
+  name     = "${var.project_name}-primary-tg"
+  port     = 5000
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.primary_vpc.id
 
-# resource "aws_lb_listener" "primary_listener" {
-#   provider          = aws.primary
-#   load_balancer_arn = aws_lb.primary_alb.arn
-#   port              = 5000
-#   protocol          = "HTTP"
-#   default_action {
-#     type             = "forward"
-#     target_group_arn = aws_lb_target_group.primary_tg.arn
-#   }
-# }
+  health_check {
+    enabled             = true
+    healthy_threshold   = 2
+    interval            = 30
+    path                = "/"
+    port                = "traffic-port"
+    protocol            = "HTTP"
+    timeout             = 5
+    unhealthy_threshold = 2
+  }
+}
 
-# resource "aws_autoscaling_group" "primary_asg" {
-#   provider         = aws.primary
-#   desired_capacity = 2
-#   max_size         = 5
-#   min_size         = 2
-#   launch_template {
-#     id      = aws_launch_template.primary_backend.id
-#     version = "$Latest"
-#   }
-#   vpc_zone_identifier = [aws_subnet.primary_public_a.id, aws_subnet.primary_public_b.id]
-#   target_group_arns   = [aws_lb_target_group.primary_tg.arn]
-#   depends_on          = [aws_lb_listener.primary_listener]
+resource "aws_lb_listener" "primary_listener" {
+  provider          = aws.primary
+  load_balancer_arn = aws_lb.primary_alb.arn
+  port              = 80
+  protocol          = "HTTP"
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.primary_tg.arn
+  }
+}
 
-#   tag {
-#     key                 = "Name"
-#     value               = "${var.project_name}-primary-instance"
-#     propagate_at_launch = true
-#   }
-# }
+resource "aws_autoscaling_group" "primary_asg" {
+  provider         = aws.primary
+  desired_capacity = 2
+  max_size         = 5
+  min_size         = 2
+  launch_template {
+    id      = aws_launch_template.primary_backend.id
+    version = "$Latest"
+  }
+  vpc_zone_identifier = [aws_subnet.primary_public_a.id, aws_subnet.primary_public_b.id]
+  target_group_arns   = [aws_lb_target_group.primary_tg.arn]
+  depends_on          = [aws_lb_listener.primary_listener]
+
+  tag {
+    key                 = "Name"
+    value               = "${var.project_name}-primary-instance"
+    propagate_at_launch = true
+  }
+}
 
 ##################################################
 # SECONDARY REGION (us-west-2)
@@ -795,10 +828,10 @@ resource "aws_s3_bucket_replication_configuration" "primary_to_secondary" {
 #   description = "Global endpoint for the application"
 # }
 
-# output "primary_alb_dns" {
-#   value       = aws_lb.primary_alb.dns_name
-#   description = "Primary region ALB DNS"
-# }
+output "primary_alb_dns" {
+  value       = aws_lb.primary_alb.dns_name
+  description = "Primary region ALB DNS"
+}
 
 # output "secondary_alb_dns" {
 #   value       = aws_lb.secondary_alb.dns_name
