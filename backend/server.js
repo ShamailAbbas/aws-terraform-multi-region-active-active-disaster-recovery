@@ -43,7 +43,8 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 // ---------- AUTO-CREATE TABLE ----------
 const createMediaTable = async () => {
-  const query = `
+try {
+    const query = `
     CREATE TABLE IF NOT EXISTS media (
       id UUID PRIMARY KEY,
       filename TEXT NOT NULL,
@@ -54,6 +55,9 @@ const createMediaTable = async () => {
   `;
   await pool.query(query);
   console.log('Media table is ready.');
+} catch (error) {
+  console.error('Error creating media table:', error);
+}
 };
 
 // Initialize table before starting the server

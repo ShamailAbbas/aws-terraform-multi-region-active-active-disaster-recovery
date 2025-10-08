@@ -31,7 +31,11 @@
   <pre id="sessionResult"></pre>
 
   <script>
-    const API_BASE = 'http://multi-region-app-secondary-alb-1795054307.us-east-2.elb.amazonaws.com'; // leave blank if same domain as Node.js backend
+
+    // const API_BASE = 'http://multi-region-app-primary-alb-947842894.us-east-1.elb.amazonaws.com';
+
+    const API_BASE = 'http://multi-region-app-secondary-alb-1918374281.us-east-2.elb.amazonaws.com';
+
 
     async function uploadMedia() {
       const fileInput = document.getElementById('fileInput');
