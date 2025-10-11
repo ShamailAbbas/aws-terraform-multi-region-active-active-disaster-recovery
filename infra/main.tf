@@ -1,41 +1,4 @@
 ##################################################
-# GLOBAL CONFIG
-##################################################
-terraform {
-  required_version = ">=1.10.0"
-
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
-    }
-  }
-}
-
-provider "aws" {
-  region = var.primary_region
-  alias  = "primary"
-}
-
-provider "aws" {
-  region = var.secondary_region
-  alias  = "secondary"
-}
-
-##################################################
-# VARIABLES
-##################################################
-variable "project_name" { default = "multi-region-app" }
-variable "primary_region" { default = "us-east-1" }
-variable "secondary_region" { default = "us-east-2" }
-variable "db_username" { default = "adminuser" }
-variable "db_password" { default = "YourSecurePassword123!" }
-variable "instance_type" { default = "t3.micro" }
-variable "ami_primary" { default = "ami-0360c520857e3138f" }
-variable "ami_secondary" { default = "ami-0cfde0ea8edd312d4" }
-# variable "domain_name" { default = "example.com" }
-
-##################################################
 # PRIMARY REGION (us-east-1)
 ##################################################
 
@@ -202,6 +165,16 @@ resource "aws_iam_policy" "ec2_s3_access" {
           aws_s3_bucket.secondary_assets.arn,
           "${aws_s3_bucket.secondary_assets.arn}/*"
         ]
+      },
+      {
+        Effect : "Allow",
+        Action : [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret"
+        ],
+        Resource : ["arn:aws:secretsmanager:${var.primary_region}:${data.aws_caller_identity.current.account_id}:secret:${var.db_secret_name}-*",
+          "arn:aws:secretsmanager:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:secret:${var.db_secret_name}-*"
+        ]
       }
     ]
   })
@@ -213,10 +186,7 @@ resource "aws_iam_role_policy_attachment" "ec2_s3_access_attach" {
 }
 
 
-resource "aws_iam_role_policy_attachment" "ec2_dynamodb" {
-  role       = aws_iam_role.ec2_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess"
-}
+
 
 resource "aws_iam_instance_profile" "ec2_profile" {
   name = "${var.project_name}-ec2-profile"
@@ -233,7 +203,7 @@ resource "aws_rds_global_cluster" "global_db" {
   global_cluster_identifier = "${var.project_name}-global-cluster"
   engine                    = "aurora-postgresql"
   engine_version            = "15.4"
-  database_name             = "appdb"
+  database_name             = var.db_name
 }
 
 resource "aws_db_subnet_group" "primary_db_subnet" {
@@ -247,7 +217,7 @@ resource "aws_rds_cluster" "primary_cluster" {
   cluster_identifier           = "${var.project_name}-primary-cluster"
   engine                       = "aurora-postgresql"
   engine_version               = "15.4"
-  database_name                = "appdb"
+  database_name                = var.db_name
   master_username              = var.db_username
   master_password              = var.db_password
   db_subnet_group_name         = aws_db_subnet_group.primary_db_subnet.name
@@ -307,14 +277,9 @@ cd aws-terraform-multi-region-active-active-disaster-recovery/backend
 # Create .env file with environment variables
 cat > .env <<ENV
 REGION=us-east-1
-PRIMARY_DB_HOST=${aws_rds_cluster.primary_cluster.endpoint}
-SECONDARY_DB_HOST=${aws_rds_cluster.secondary_cluster.endpoint}
-DB_USER=adminuser
-DB_PASSWORD=YourSecurePassword123!
-DB_NAME=appdb
-S3_BUCKET_PRIMARY=multi-region-app-assets-primary
-S3_BUCKET_SECONDARY=multi-region-app-assets-secondary
-DYNAMO_TABLE=multi-region-app-sessions
+S3_BUCKET_PRIMARY=${aws_s3_bucket.primary_assets.bucket}
+S3_BUCKET_SECONDARY=${aws_s3_bucket.secondary_assets.bucket}
+
 ENV
 
 # Install Node.js dependencies
@@ -326,7 +291,7 @@ EOF
   )
 
 
-  depends_on = [aws_rds_cluster.primary_cluster, aws_rds_cluster.secondary_cluster]
+  depends_on = [aws_s3_bucket.primary_assets.bucket, aws_s3_bucket.secondary_assets.bucket]
 
 }
 
@@ -389,380 +354,43 @@ resource "aws_autoscaling_group" "primary_asg" {
   }
 }
 
-##################################################
-# SECONDARY REGION (us-west-2)
-##################################################
 
-# --- VPC / SUBNETS ---
-resource "aws_vpc" "secondary_vpc" {
-  provider             = aws.secondary
-  cidr_block           = "10.1.0.0/16"
-  enable_dns_hostnames = true
-  enable_dns_support   = true
-  tags                 = { Name = "${var.project_name}-secondary-vpc" }
-}
 
-resource "aws_subnet" "secondary_public_a" {
-  provider                = aws.secondary
-  vpc_id                  = aws_vpc.secondary_vpc.id
-  cidr_block              = "10.1.1.0/24"
-  availability_zone       = "${var.secondary_region}a"
-  map_public_ip_on_launch = true
-  tags                    = { Name = "${var.project_name}-secondary-public-a" }
-}
+# -------------------------------------------------------------
+# Secrets for DB creds with replication in secondary region
+# -------------------------------------------------------------
+resource "aws_secretsmanager_secret" "db_secret" {
+  name     = var.db_secret_name
+  provider = aws.primary
 
-resource "aws_subnet" "secondary_public_b" {
-  provider                = aws.secondary
-  vpc_id                  = aws_vpc.secondary_vpc.id
-  cidr_block              = "10.1.2.0/24"
-  availability_zone       = "${var.secondary_region}b"
-  map_public_ip_on_launch = true
-  tags                    = { Name = "${var.project_name}-secondary-public-b" }
-}
-
-resource "aws_subnet" "secondary_private_a" {
-  provider          = aws.secondary
-  vpc_id            = aws_vpc.secondary_vpc.id
-  cidr_block        = "10.1.3.0/24"
-  availability_zone = "${var.secondary_region}a"
-  tags              = { Name = "${var.project_name}-secondary-private-a" }
-}
-
-resource "aws_subnet" "secondary_private_b" {
-  provider          = aws.secondary
-  vpc_id            = aws_vpc.secondary_vpc.id
-  cidr_block        = "10.1.4.0/24"
-  availability_zone = "${var.secondary_region}b"
-  tags              = { Name = "${var.project_name}-secondary-private-b" }
-}
-
-resource "aws_internet_gateway" "secondary_igw" {
-  provider = aws.secondary
-  vpc_id   = aws_vpc.secondary_vpc.id
-}
-
-resource "aws_route_table" "secondary_rt" {
-  provider = aws.secondary
-  vpc_id   = aws_vpc.secondary_vpc.id
-
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.secondary_igw.id
-  }
-}
-
-resource "aws_route_table_association" "secondary_assoc_a" {
-  provider       = aws.secondary
-  subnet_id      = aws_subnet.secondary_public_a.id
-  route_table_id = aws_route_table.secondary_rt.id
-}
-
-resource "aws_route_table_association" "secondary_assoc_b" {
-  provider       = aws.secondary
-  subnet_id      = aws_subnet.secondary_public_b.id
-  route_table_id = aws_route_table.secondary_rt.id
-}
-
-resource "aws_security_group" "secondary_sg" {
-  provider = aws.secondary
-  vpc_id   = aws_vpc.secondary_vpc.id
-  name     = "${var.project_name}-secondary-sg"
-
-  ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-  ingress {
-    from_port   = 5000
-    to_port     = 5000
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    from_port   = 5432
-    to_port     = 5432
-    protocol    = "tcp"
-    cidr_blocks = ["10.0.0.0/16", "10.1.0.0/16"]
-  }
-
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
-# --- RDS Secondary Cluster ---
-resource "aws_db_subnet_group" "secondary_db_subnet" {
-  provider   = aws.secondary
-  name       = "${var.project_name}-secondary-dbsubnet"
-  subnet_ids = [aws_subnet.secondary_private_a.id, aws_subnet.secondary_private_b.id]
-}
-
-resource "aws_rds_cluster" "secondary_cluster" {
-  provider                  = aws.secondary
-  cluster_identifier        = "${var.project_name}-secondary-cluster"
-  engine                    = "aurora-postgresql"
-  engine_version            = "15.4"
-  db_subnet_group_name      = aws_db_subnet_group.secondary_db_subnet.name
-  vpc_security_group_ids    = [aws_security_group.secondary_sg.id]
-  skip_final_snapshot       = true
-  global_cluster_identifier = aws_rds_global_cluster.global_db.id
-  depends_on                = [aws_rds_cluster_instance.primary_instance_1]
-}
-
-resource "aws_rds_cluster_instance" "secondary_instance_1" {
-  provider            = aws.secondary
-  identifier          = "${var.project_name}-secondary-instance-1"
-  cluster_identifier  = aws_rds_cluster.secondary_cluster.id
-  instance_class      = "db.r5.large"
-  engine              = "aurora-postgresql"
-  publicly_accessible = false
-}
-
-resource "aws_rds_cluster_instance" "secondary_instance_2" {
-  provider            = aws.secondary
-  identifier          = "${var.project_name}-secondary-instance-2"
-  cluster_identifier  = aws_rds_cluster.secondary_cluster.id
-  instance_class      = "db.r5.large"
-  engine              = "aurora-postgresql"
-  publicly_accessible = false
-}
-
-# --- EC2 + ALB ---
-
-resource "aws_launch_template" "secondary_backend" {
-  provider               = aws.secondary
-  name_prefix            = "${var.project_name}-secondary-backend"
-  image_id               = var.ami_secondary
-  instance_type          = var.instance_type
-  vpc_security_group_ids = [aws_security_group.secondary_sg.id]
-  iam_instance_profile {
-    name = aws_iam_instance_profile.ec2_profile.name
-  }
-
-  user_data = base64encode(<<EOF
-#!/bin/bash
-# Update and install dependencies
-sudo apt update -y
-sudo apt install -y  git curl build-essential
-
-# Install Node.js (latest LTS)
-curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
-sudo apt install -y nodejs
-
-# Clone the repository
-cd /home/ubuntu
-git clone https://github.com/ShamailAbbas/aws-terraform-multi-region-active-active-disaster-recovery.git
-cd aws-terraform-multi-region-active-active-disaster-recovery/backend
-
-# Create .env file with environment variables
-cat > .env <<ENV
-REGION=us-east-2
-PRIMARY_DB_HOST=${aws_rds_cluster.primary_cluster.endpoint}
-SECONDARY_DB_HOST=${aws_rds_cluster.secondary_cluster.endpoint}
-DB_USER=adminuser
-DB_PASSWORD=YourSecurePassword123!
-DB_NAME=appdb
-S3_BUCKET_PRIMARY=multi-region-app-assets-primary
-S3_BUCKET_SECONDARY=multi-region-app-assets-secondary
-DYNAMO_TABLE=multi-region-app-sessions
-ENV
-
-# Install Node.js dependencies
-npm install
-
-# Start the Node.js backend app
-npm start
-EOF
-  )
-
-  depends_on = [aws_rds_cluster.primary_cluster, aws_rds_cluster.secondary_cluster]
-
-}
-
-resource "aws_lb" "secondary_alb" {
-  provider           = aws.secondary
-  name               = "${var.project_name}-secondary-alb"
-  internal           = false
-  load_balancer_type = "application"
-  subnets            = [aws_subnet.secondary_public_a.id, aws_subnet.secondary_public_b.id]
-  security_groups    = [aws_security_group.secondary_sg.id]
-}
-
-resource "aws_lb_target_group" "secondary_tg" {
-  provider = aws.secondary
-  name     = "${var.project_name}-secondary-tg"
-  port     = 5000
-  protocol = "HTTP"
-  vpc_id   = aws_vpc.secondary_vpc.id
-
-  health_check {
-    enabled             = true
-    healthy_threshold   = 2
-    interval            = 30
-    path                = "/health"
-    port                = "traffic-port"
-    protocol            = "HTTP"
-    timeout             = 5
-    unhealthy_threshold = 2
-  }
-}
-
-resource "aws_lb_listener" "secondary_listener" {
-  provider          = aws.secondary
-  load_balancer_arn = aws_lb.secondary_alb.arn
-  port              = 80
-  protocol          = "HTTP"
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.secondary_tg.arn
-  }
-}
-
-resource "aws_autoscaling_group" "secondary_asg" {
-  provider         = aws.secondary
-  desired_capacity = 2
-  max_size         = 5
-  min_size         = 1
-  launch_template {
-    id      = aws_launch_template.secondary_backend.id
-    version = "$Latest"
-  }
-  vpc_zone_identifier = [aws_subnet.secondary_public_a.id, aws_subnet.secondary_public_b.id]
-  target_group_arns   = [aws_lb_target_group.secondary_tg.arn]
-  depends_on          = [aws_lb_listener.secondary_listener]
-
-  tag {
-    key                 = "Name"
-    value               = "${var.project_name}-secondary-instance"
-    propagate_at_launch = true
-  }
-}
-
-##################################################
-# DYNAMODB GLOBAL TABLE (Session Storage)
-##################################################
-
-resource "aws_dynamodb_table" "session_table" {
-  provider         = aws.primary
-  name             = "${var.project_name}-sessions"
-  billing_mode     = "PAY_PER_REQUEST"
-  hash_key         = "sessionId"
-  stream_enabled   = true
-  stream_view_type = "NEW_AND_OLD_IMAGES"
-
-  attribute {
-    name = "sessionId"
-    type = "S"
-  }
-
+  # Enable replication to secondary region
   replica {
-    region_name = var.secondary_region
+    region = var.secondary_region
   }
 
   tags = {
-    Name = "${var.project_name}-sessions"
+    Name = "${var.project_name}-db-secret"
   }
 }
 
-##################################################
-# ROUTE 53 (Global Traffic Management)
-##################################################
 
-# data "aws_route53_zone" "main" {
-#   name         = var.domain_name
-#   private_zone = false
-# }
+resource "aws_secretsmanager_secret_version" "db_secret_value" {
+  secret_id = aws_secretsmanager_secret.db_secret.id
+  secret_string = jsonencode({
+    username                        = var.db_username
+    password                        = var.db_password
+    primary_cluster_writer_endpoint = aws_rds_cluster.primary_cluster.endpoint
+    secondary_cluster_endpoint      = aws_rds_cluster.secondary_cluster.endpoint
+    dbname                          = var.db_name
+  })
+}
 
-# # Health Check for Primary
-# resource "aws_route53_health_check" "primary" {
-#   fqdn              = aws_lb.primary_alb.dns_name
-#   port              = 80
-#   type              = "HTTP"
-#   resource_path     = "/"
-#   failure_threshold = 3
-#   request_interval  = 30
 
-#   tags = {
-#     Name = "${var.project_name}-primary-health"
-#   }
-# }
 
-# # Health Check for Secondary
-# resource "aws_route53_health_check" "secondary" {
-#   fqdn              = aws_lb.secondary_alb.dns_name
-#   port              = 80
-#   type              = "HTTP"
-#   resource_path     = "/"
-#   failure_threshold = 3
-#   request_interval  = 30
 
-#   tags = {
-#     Name = "${var.project_name}-secondary-health"
-#   }
-# }
-
-# # Latency-based routing for active-active
-# resource "aws_route53_record" "primary" {
-#   zone_id        = data.aws_route53_zone.main.zone_id
-#   name           = "app.${var.domain_name}"
-#   type           = "A"
-#   set_identifier = "primary"
-
-#   alias {
-#     name                   = aws_lb.primary_alb.dns_name
-#     zone_id                = aws_lb.primary_alb.zone_id
-#     evaluate_target_health = true
-#   }
-
-#   latency_routing_policy {
-#     region = var.primary_region
-#   }
-
-#   health_check_id = aws_route53_health_check.primary.id
-# }
-
-# resource "aws_route53_record" "secondary" {
-#   zone_id        = data.aws_route53_zone.main.zone_id
-#   name           = "app.${var.domain_name}"
-#   type           = "A"
-#   set_identifier = "secondary"
-
-#   alias {
-#     name                   = aws_lb.secondary_alb.dns_name
-#     zone_id                = aws_lb.secondary_alb.zone_id
-#     evaluate_target_health = true
-#   }
-
-#   latency_routing_policy {
-#     region = var.secondary_region
-#   }
-
-#   health_check_id = aws_route53_health_check.secondary.id
-# }
-
-##################################################
-# S3 CROSS-REGION REPLICATION (Static Assets)
-##################################################
+####################################################################
+# S3 in primary with CROSS-REGION REPLICATION  in secondary region
+#####################################################################
 
 resource "aws_s3_bucket" "primary_assets" {
   provider = aws.primary
@@ -865,47 +493,4 @@ resource "aws_s3_bucket_replication_configuration" "primary_to_secondary" {
   }
 
   depends_on = [aws_s3_bucket_versioning.primary_versioning]
-}
-
-##################################################
-# OUTPUTS
-##################################################
-# output "route53_endpoint" {
-#   value       = "app.${var.domain_name}"
-#   description = "Global endpoint for the application"
-# }
-
-output "primary_alb_dns" {
-  value       = aws_lb.primary_alb.dns_name
-  description = "Primary region ALB DNS"
-}
-
-output "secondary_alb_dns" {
-  value       = aws_lb.secondary_alb.dns_name
-  description = "Secondary region ALB DNS"
-}
-
-output "primary_db_endpoint" {
-  value       = aws_rds_cluster.primary_cluster.endpoint
-  description = "Primary Aurora cluster endpoint"
-}
-
-output "secondary_db_endpoint" {
-  value       = aws_rds_cluster.secondary_cluster.endpoint
-  description = "Secondary Aurora cluster endpoint"
-}
-
-output "dynamodb_table" {
-  value       = aws_dynamodb_table.session_table.name
-  description = "Global DynamoDB table for sessions"
-}
-
-output "s3_primary_bucket" {
-  value       = aws_s3_bucket.primary_assets.bucket
-  description = "Primary S3 bucket for assets"
-}
-
-output "s3_secondary_bucket" {
-  value       = aws_s3_bucket.secondary_assets.bucket
-  description = "Secondary S3 bucket for assets"
 }
