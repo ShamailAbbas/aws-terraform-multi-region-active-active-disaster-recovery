@@ -388,7 +388,7 @@ resource "aws_secretsmanager_secret_version" "app_secret_value" {
     db_secondary_cluster_endpoint = aws_rds_cluster.secondary_cluster.endpoint
     db_name                       = var.db_name
 
-    cloudfront_url = aws_cloudfront_distribution.cdn.domain_name
+    cloudfront_url = "https://${aws_cloudfront_distribution.cdn.domain_name}"
 
     main_s3_bucket      = aws_s3_bucket.primary_assets.bucket
     secondary_s3_bucket = aws_s3_bucket.secondary_assets.bucket

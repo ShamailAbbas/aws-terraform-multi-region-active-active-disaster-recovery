@@ -13,33 +13,67 @@ app.use(cors());
 const REGION = process.env.REGION;
 const APP_SECRET_NAME = process.env.APP_SECRET_NAME;
 
-
 AWS.config.update({ region: REGION });
 const secretsManager = new AWS.SecretsManager({ region: REGION });
-const s3 = new AWS.S3();
+let s3 = new AWS.S3();
 
 const upload = multer({ storage: multer.memoryStorage() });
 
 let AppConfig = null;
 let writerPool = null;
 let readerPool = null;
+let lastFetchTime = 0;
+const SECRET_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
-// --------------------------
-// Fetch Secrets from AWS
-// --------------------------
-async function fetchSecrets() {
+// -----------------------------------------------------
+// Fetch Secrets (cached with optional force refresh)
+// -----------------------------------------------------
+async function fetchSecrets(force = false) {
+  const now = Date.now();
+  if (!force && AppConfig && now - lastFetchTime < SECRET_CACHE_TTL_MS) {
+    return AppConfig;
+  }
+
+  console.log('🔐 Fetching latest secrets from AWS...');
   const secret = await secretsManager.getSecretValue({ SecretId: APP_SECRET_NAME }).promise();
-  if (!secret || !secret.SecretString) throw new Error("DB secret not found or empty");
-  AppConfig = JSON.parse(secret.SecretString);
-  console.log("🔑 Secrets fetched successfully");
+  if (!secret || !secret.SecretString) throw new Error("Secret not found or empty");
+
+  const newConfig = JSON.parse(secret.SecretString);
+  lastFetchTime = now;
+
+  // If bucket or DB changed, handle it gracefully
+  if (AppConfig) {
+    const bucketChanged = AppConfig.main_s3_bucket !== newConfig.main_s3_bucket;
+    const dbChanged =
+      AppConfig.db_password !== newConfig.db_password ||
+      AppConfig.db_primary_cluster_endpoint !== newConfig.db_primary_cluster_endpoint ||
+      AppConfig.db_secondary_cluster_endpoint !== newConfig.db_secondary_cluster_endpoint;
+
+    if (bucketChanged) {
+      console.log('🪣 S3 bucket configuration changed, updating S3 client...');
+      s3 = new AWS.S3(); // reinit client (same region but safe)
+    }
+
+    if (dbChanged) {
+      console.log('⚙️ DB credentials or endpoints changed, refreshing DB connections...');
+      AppConfig = newConfig;
+      await initDbConnections();
+    }
+  }
+
+  AppConfig = newConfig;
   return AppConfig;
 }
 
-// --------------------------
-// Initialize DB Connections
-// --------------------------
+// -----------------------------------------------------
+// Initialize Database Connections
+// -----------------------------------------------------
 async function initDbConnections() {
-  const creds = AppConfig || await fetchSecrets();
+  const creds = await fetchSecrets(true);
+
+  // Close existing pools if any
+  if (writerPool) await writerPool.end().catch(() => {});
+  if (readerPool) await readerPool.end().catch(() => {});
 
   writerPool = new Pool({
     host: creds.db_primary_cluster_endpoint,
@@ -50,27 +84,41 @@ async function initDbConnections() {
   });
 
   readerPool = new Pool({
-    host: REGION === 'us-east-1'
-      ? creds.db_primary_cluster_endpoint
-      : creds.db_secondary_cluster_endpoint,
-     user: creds.db_username,
+    host:
+      REGION === 'us-east-1'
+        ? creds.db_primary_cluster_endpoint
+        : creds.db_secondary_cluster_endpoint,
+    user: creds.db_username,
     password: creds.db_password,
     database: creds.db_name,
     port: 5432,
   });
 
-  console.log(`✅ DB connections established`);
+  console.log('✅ Database connections ready');
 }
 
-// --------------------------
-// Helper DB Query Functions
-// --------------------------
+// -----------------------------------------------------
+// Background Secrets Refresher
+// -----------------------------------------------------
+function startSecretRefresher() {
+  setInterval(async () => {
+    try {
+      console.log('🔄 Periodic secrets refresh...');
+      await fetchSecrets(true);
+    } catch (err) {
+      console.error('❌ Secrets refresh failed:', err.message);
+    }
+  }, 5 * 60 * 1000); // every 5 minutes
+}
+
+// -----------------------------------------------------
+// DB Query Wrappers
+// -----------------------------------------------------
 async function runWriterQuery(query, params) {
   try {
     return await writerPool.query(query, params);
   } catch (err) {
-    console.error("❌ Writer DB error:", err.message);
-    await fetchSecrets();
+    console.error('❌ Writer DB error:', err.message);
     await initDbConnections();
     return writerPool.query(query, params);
   }
@@ -80,23 +128,23 @@ async function runReaderQuery(query, params) {
   try {
     return await readerPool.query(query, params);
   } catch (err) {
-    console.error("⚠️ Reader DB error:", err.message);
-    await fetchSecrets();
+    console.error('⚠️ Reader DB error:', err.message);
     await initDbConnections();
     return readerPool.query(query, params);
   }
 }
 
-// --------------------------
+// -----------------------------------------------------
 // Initialize App
-// --------------------------
+// -----------------------------------------------------
 async function initApp() {
   try {
-    await fetchSecrets();
+    await fetchSecrets(true);
     await initDbConnections();
+    startSecretRefresher();
 
-    // DB table
-    const createTableQuery = `
+    // Ensure table exists
+    await runWriterQuery(`
       CREATE TABLE IF NOT EXISTS media (
         id UUID PRIMARY KEY,
         filename TEXT NOT NULL,
@@ -104,30 +152,29 @@ async function initApp() {
         region TEXT,
         created_at TIMESTAMP DEFAULT NOW()
       );
-    `;
-    await runWriterQuery(createTableQuery);
-    console.log('✅ Media table ready.');
+    `);
 
-    // -------- ROUTES --------
+    console.log('✅ Media table verified');
+
+    // Health
     app.get('/health', (req, res) => res.send(`✅ Healthy - Region: ${REGION}`));
 
-    // --------------------------
-    // POST /api/media — Upload
-    // --------------------------
+    // Upload
     app.post('/api/media', upload.single('file'), async (req, res) => {
       try {
-        if (!req.file) return res.status(400).json({ error: "No file provided" });
+        if (!req.file) return res.status(400).json({ error: 'No file provided' });
 
         const id = uuidv4();
         const fileKey = `${id}-${req.file.originalname}`;
 
-        // Upload to primary bucket
-        await s3.putObject({
-          Bucket: AppConfig.main_s3_bucket,
-          Key: fileKey,
-          Body: req.file.buffer,
-          ContentType: req.file.mimetype,
-        }).promise();
+        await s3
+          .putObject({
+            Bucket: AppConfig.main_s3_bucket,
+            Key: fileKey,
+            Body: req.file.buffer,
+            ContentType: req.file.mimetype,
+          })
+          .promise();
 
         const result = await runWriterQuery(
           `INSERT INTO media(id, filename, s3_key, region) VALUES($1, $2, $3, $4) RETURNING *`,
@@ -135,15 +182,14 @@ async function initApp() {
         );
 
         const url = `${AppConfig.cloudfront_url}/${fileKey}`;
-
         res.status(201).json({
           message: '✅ File uploaded successfully',
           media: {
             id,
             filename: req.file.originalname,
             url,
-            created_at: result.rows[0].created_at
-          }
+            created_at: result.rows[0].created_at,
+          },
         });
       } catch (err) {
         console.error('❌ Upload failed:', err);
@@ -151,17 +197,15 @@ async function initApp() {
       }
     });
 
-    // --------------------------
-    // GET /api/media — List all
-    // --------------------------
+    // List
     app.get('/api/media', async (req, res) => {
       try {
         const result = await runReaderQuery('SELECT * FROM media ORDER BY created_at DESC');
-        const media = result.rows.map(m => ({
+        const media = result.rows.map((m) => ({
           id: m.id,
           filename: m.filename,
           url: `${AppConfig.cloudfront_url}/${m.s3_key}`,
-          created_at: m.created_at
+          created_at: m.created_at,
         }));
         res.json({ count: media.length, media });
       } catch (err) {
@@ -170,17 +214,11 @@ async function initApp() {
       }
     });
 
-
-
     // Start Server
     const PORT = process.env.PORT || 5000;
-    app.listen(PORT, () => {
-      console.log(`🚀 Content Service running in ${REGION} on port ${PORT}`);
-
-    });
-
+    app.listen(PORT, () => console.log(`🚀 Running in ${REGION} on port ${PORT}`));
   } catch (err) {
-    console.error("❌ App initialization failed:", err);
+    console.error('❌ App init failed:', err);
     process.exit(1);
   }
 }

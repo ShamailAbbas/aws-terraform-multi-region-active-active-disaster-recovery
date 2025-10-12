@@ -121,7 +121,8 @@ resource "aws_s3_bucket_policy" "primary_policy" {
 }
 
 resource "aws_s3_bucket_policy" "secondary_policy" {
-  bucket = aws_s3_bucket.secondary_assets.id
+  provider = aws.secondary
+  bucket   = aws_s3_bucket.secondary_assets.id
 
   policy = jsonencode({
     Version = "2012-10-17",
