@@ -127,17 +127,9 @@ async function runQuery(query, params) {
 }
 
 
-
-// -----------------------------------------------------
-// Initialize App
-// -----------------------------------------------------
-async function initApp() {
-  try {
-    await fetchSecrets(true);
-    await initDbConnections();
-    startSecretRefresher();
-
-    // Ensure table exists
+async function createMediaTable() {
+ try {
+      // Ensure table exists
     await runQuery(`
       CREATE TABLE IF NOT EXISTS media (
         id UUID PRIMARY KEY,
@@ -149,6 +141,20 @@ async function initApp() {
     `);
 
     console.log('✅ Media table verified');
+ } catch (error) {
+  console.log("error creating media table ",error)
+ }
+}
+// -----------------------------------------------------
+// Initialize App
+// -----------------------------------------------------
+async function initApp() {
+  try {
+    await fetchSecrets(true);
+    await initDbConnections();
+    startSecretRefresher();
+
+    await createMediaTable()
 
     // Health
     app.get('/health', (req, res) => res.send(`✅ Healthy - Region: ${REGION}`));
