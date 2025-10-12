@@ -21,3 +21,5 @@ provider "aws" {
   region = var.secondary_region
   alias  = "secondary"
 }
+
+data "aws_caller_identity" "current" {}

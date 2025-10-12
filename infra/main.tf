@@ -172,8 +172,8 @@ resource "aws_iam_policy" "ec2_s3_access" {
           "secretsmanager:GetSecretValue",
           "secretsmanager:DescribeSecret"
         ],
-        Resource : ["arn:aws:secretsmanager:${var.primary_region}:${data.aws_caller_identity.current.account_id}:secret:${var.db_secret_name}-*",
-          "arn:aws:secretsmanager:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:secret:${var.db_secret_name}-*"
+        Resource : ["arn:aws:secretsmanager:${var.primary_region}:${data.aws_caller_identity.current.account_id}:secret:${var.app_secret_name}-*",
+          "arn:aws:secretsmanager:${var.secondary_region}:${data.aws_caller_identity.current.account_id}:secret:${var.app_secret_name}-*"
         ]
       }
     ]
@@ -277,21 +277,26 @@ cd aws-terraform-multi-region-active-active-disaster-recovery/backend
 # Create .env file with environment variables
 cat > .env <<ENV
 REGION=us-east-1
-S3_BUCKET_PRIMARY=${aws_s3_bucket.primary_assets.bucket}
-S3_BUCKET_SECONDARY=${aws_s3_bucket.secondary_assets.bucket}
+APP_SECRET_NAME=${aws_secretsmanager_secret.app_secret.name}
 
 ENV
 
 # Install Node.js dependencies
 npm install
 
-# Start the Node.js backend app
-npm start
+# install pm2
+sudo npm install -g pm2
+
+# Start Node.js app with PM2
+pm2 start npm --name nodeapp -- start
+pm2 save
+sudo pm2 startup systemd -u ubuntu --hp /home/ubuntu
+
 EOF
   )
 
 
-  depends_on = [aws_s3_bucket.primary_assets.bucket, aws_s3_bucket.secondary_assets.bucket]
+  depends_on = [aws_s3_bucket.primary_assets, aws_s3_bucket.secondary_assets, aws_secretsmanager_secret.app_secret, aws_rds_cluster.primary_cluster, aws_rds_cluster.secondary_cluster]
 
 }
 
@@ -359,8 +364,8 @@ resource "aws_autoscaling_group" "primary_asg" {
 # -------------------------------------------------------------
 # Secrets for DB creds with replication in secondary region
 # -------------------------------------------------------------
-resource "aws_secretsmanager_secret" "db_secret" {
-  name     = var.db_secret_name
+resource "aws_secretsmanager_secret" "app_secret" {
+  name     = var.app_secret_name
   provider = aws.primary
 
   # Enable replication to secondary region
@@ -369,19 +374,25 @@ resource "aws_secretsmanager_secret" "db_secret" {
   }
 
   tags = {
-    Name = "${var.project_name}-db-secret"
+    Name = "${var.project_name}-app-secret"
   }
 }
 
 
-resource "aws_secretsmanager_secret_version" "db_secret_value" {
-  secret_id = aws_secretsmanager_secret.db_secret.id
+resource "aws_secretsmanager_secret_version" "app_secret_value" {
+  secret_id = aws_secretsmanager_secret.app_secret.id
   secret_string = jsonencode({
-    username                        = var.db_username
-    password                        = var.db_password
-    primary_cluster_writer_endpoint = aws_rds_cluster.primary_cluster.endpoint
-    secondary_cluster_endpoint      = aws_rds_cluster.secondary_cluster.endpoint
-    dbname                          = var.db_name
+    db_username                   = var.db_username
+    db_password                   = var.db_password
+    db_primary_cluster_endpoint   = aws_rds_cluster.primary_cluster.endpoint
+    db_secondary_cluster_endpoint = aws_rds_cluster.secondary_cluster.endpoint
+    db_name                       = var.db_name
+
+    cloudfront_url = aws_cloudfront_distribution.cdn.domain_name
+
+    main_s3_bucket      = aws_s3_bucket.primary_assets.bucket
+    secondary_s3_bucket = aws_s3_bucket.secondary_assets.bucket
+
   })
 }
 

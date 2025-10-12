@@ -138,6 +138,17 @@ resource "aws_rds_cluster" "secondary_cluster" {
   skip_final_snapshot       = true
   global_cluster_identifier = aws_rds_global_cluster.global_db.id
   depends_on                = [aws_rds_cluster_instance.primary_instance_1]
+
+  lifecycle {
+    ignore_changes = [
+      replication_source_identifier,
+      engine_version,
+      master_username,
+      storage_encrypted,
+      availability_zones,
+    ]
+  }
+
 }
 
 resource "aws_rds_cluster_instance" "secondary_instance_1" {
@@ -188,20 +199,25 @@ cd aws-terraform-multi-region-active-active-disaster-recovery/backend
 # Create .env file with environment variables
 cat > .env <<ENV
 REGION=us-east-2
-S3_BUCKET_PRIMARY=${aws_s3_bucket.primary_assets.bucket}
-S3_BUCKET_SECONDARY=${aws_s3_bucket.secondary_assets.bucket}
+APP_SECRET_NAME=${aws_secretsmanager_secret.app_secret.name}
 
 ENV
 
 # Install Node.js dependencies
 npm install
 
-# Start the Node.js backend app
-npm start
+# install pm2
+sudo npm install -g pm2
+
+# Start Node.js app with PM2
+pm2 start npm --name nodeapp -- start
+pm2 save
+sudo pm2 startup systemd -u ubuntu --hp /home/ubuntu
+
 EOF
   )
 
-  depends_on = [aws_s3_bucket.primary_assets.bucket, aws_s3_bucket.secondary_assets.bucket]
+  depends_on = [aws_s3_bucket.primary_assets, aws_s3_bucket.secondary_assets, aws_secretsmanager_secret.app_secret, aws_rds_cluster.primary_cluster, aws_rds_cluster.secondary_cluster]
 
 }
 

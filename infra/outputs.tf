@@ -8,36 +8,40 @@
 # }
 
 output "primary_alb_dns" {
-  value       = aws_lb.primary_alb.dns_name
+  value       = "https://${aws_lb.primary_alb.dns_name}"
   description = "Primary region ALB DNS"
 }
 
 output "secondary_alb_dns" {
-  value       = aws_lb.secondary_alb.dns_name
+  value       = "https://${aws_lb.secondary_alb.dns_name}"
   description = "Secondary region ALB DNS"
 }
 
-output "primary_db_endpoint" {
-  value       = aws_rds_cluster.primary_cluster.endpoint
-  description = "Primary Aurora cluster endpoint"
+output "cdn_url" {
+  value = "https://${aws_cloudfront_distribution.cdn.domain_name}"
 }
 
-output "secondary_db_endpoint" {
-  value       = aws_rds_cluster.secondary_cluster.endpoint
-  description = "Secondary Aurora cluster endpoint"
-}
+# output "primary_db_cluster_endpoint" {
+#   value       = aws_rds_cluster.primary_cluster.endpoint
+#   description = "Primary Aurora cluster endpoint"
+# }
 
-output "db_secret_arn" {
-  value       = aws_secretsmanager_secret.db_secret.arn
-  description = "Secrets Manager ARN for DB credentials"
-}
+# output "secondary_db_cluster_endpoint" {
+#   value       = aws_rds_cluster.secondary_cluster.endpoint
+#   description = "Secondary Aurora cluster endpoint"
+# }
 
-output "s3_primary_bucket" {
-  value       = aws_s3_bucket.primary_assets.bucket
-  description = "Primary S3 bucket for assets"
-}
+# output "db_secret_arn" {
+#   value       = aws_secretsmanager_secret.db_secret.arn
+#   description = "Secrets Manager ARN for DB credentials"
+# }
 
-output "s3_secondary_bucket" {
-  value       = aws_s3_bucket.secondary_assets.bucket
-  description = "Secondary S3 bucket for assets"
-}
+# output "s3_primary_bucket" {
+#   value       = aws_s3_bucket.primary_assets.bucket
+#   description = "Primary S3 bucket for assets"
+# }
+
+# output "s3_secondary_bucket" {
+#   value       = aws_s3_bucket.secondary_assets.bucket
+#   description = "Secondary S3 bucket for assets"
+# }

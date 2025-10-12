@@ -11,18 +11,16 @@ app.use(express.json());
 app.use(cors());
 
 const REGION = process.env.REGION;
-const S3_BUCKET_PRIMARY = process.env.S3_BUCKET_PRIMARY;
-const S3_BUCKET_SECONDARY = process.env.S3_BUCKET_SECONDARY;
-const DB_SECRET_NAME = process.env.DB_SECRET_NAME;
+const APP_SECRET_NAME = process.env.APP_SECRET_NAME;
+
 
 AWS.config.update({ region: REGION });
 const secretsManager = new AWS.SecretsManager({ region: REGION });
 const s3 = new AWS.S3();
 
-// Multer setup
 const upload = multer({ storage: multer.memoryStorage() });
 
-let dbCredsCache = null;
+let AppConfig = null;
 let writerPool = null;
 let readerPool = null;
 
@@ -30,36 +28,38 @@ let readerPool = null;
 // Fetch Secrets from AWS
 // --------------------------
 async function fetchSecrets() {
-  const secret = await secretsManager.getSecretValue({ SecretId: DB_SECRET_NAME }).promise();
+  const secret = await secretsManager.getSecretValue({ SecretId: APP_SECRET_NAME }).promise();
   if (!secret || !secret.SecretString) throw new Error("DB secret not found or empty");
-  dbCredsCache = JSON.parse(secret.SecretString);
+  AppConfig = JSON.parse(secret.SecretString);
   console.log("🔑 Secrets fetched successfully");
-  return dbCredsCache;
+  return AppConfig;
 }
 
 // --------------------------
 // Initialize DB Connections
 // --------------------------
 async function initDbConnections() {
-  const creds = dbCredsCache || await fetchSecrets();
+  const creds = AppConfig || await fetchSecrets();
 
   writerPool = new Pool({
-    host: creds.primary_cluster_writer_endpoint,
-    user: creds.username,
-    password: creds.password,
-    database: creds.dbname,
+    host: creds.db_primary_cluster_endpoint,
+    user: creds.db_username,
+    password: creds.db_password,
+    database: creds.db_name,
     port: 5432,
   });
 
   readerPool = new Pool({
-    host: creds.secondary_cluster_endpoint || creds.primary_cluster_writer_endpoint,
-    user: creds.username,
-    password: creds.password,
-    database: creds.dbname,
+    host: REGION === 'us-east-1'
+      ? creds.db_primary_cluster_endpoint
+      : creds.db_secondary_cluster_endpoint,
+     user: creds.db_username,
+    password: creds.db_password,
+    database: creds.db_name,
     port: 5432,
   });
 
-  console.log(`✅ DB connections ready (Writer: ${creds.primary_cluster_writer_endpoint})`);
+  console.log(`✅ DB connections established`);
 }
 
 // --------------------------
@@ -70,10 +70,9 @@ async function runWriterQuery(query, params) {
     return await writerPool.query(query, params);
   } catch (err) {
     console.error("❌ Writer DB error:", err.message);
-    console.log("🔄 Refreshing secrets and retrying writer query...");
     await fetchSecrets();
     await initDbConnections();
-    return writerPool.query(query, params); // retry once with new creds
+    return writerPool.query(query, params);
   }
 }
 
@@ -82,10 +81,9 @@ async function runReaderQuery(query, params) {
     return await readerPool.query(query, params);
   } catch (err) {
     console.error("⚠️ Reader DB error:", err.message);
-    console.log("🔄 Refreshing secrets and retrying reader query...");
     await fetchSecrets();
     await initDbConnections();
-    return readerPool.query(query, params); // retry once with new creds
+    return readerPool.query(query, params);
   }
 }
 
@@ -97,6 +95,7 @@ async function initApp() {
     await fetchSecrets();
     await initDbConnections();
 
+    // DB table
     const createTableQuery = `
       CREATE TABLE IF NOT EXISTS media (
         id UUID PRIMARY KEY,
@@ -112,59 +111,72 @@ async function initApp() {
     // -------- ROUTES --------
     app.get('/health', (req, res) => res.send(`✅ Healthy - Region: ${REGION}`));
 
-    // Upload media (WRITE)
-    app.post('/media', upload.single('file'), async (req, res) => {
+    // --------------------------
+    // POST /api/media — Upload
+    // --------------------------
+    app.post('/api/media', upload.single('file'), async (req, res) => {
       try {
-        const fileKey = `${uuidv4()}-${req.file.originalname}`;
+        if (!req.file) return res.status(400).json({ error: "No file provided" });
+
+        const id = uuidv4();
+        const fileKey = `${id}-${req.file.originalname}`;
+
+        // Upload to primary bucket
         await s3.putObject({
-          Bucket: S3_BUCKET_PRIMARY,
+          Bucket: AppConfig.main_s3_bucket,
           Key: fileKey,
           Body: req.file.buffer,
           ContentType: req.file.mimetype,
         }).promise();
 
         const result = await runWriterQuery(
-          'INSERT INTO media(id, filename, s3_key, region) VALUES($1, $2, $3, $4) RETURNING *',
-          [uuidv4(), req.file.originalname, fileKey, REGION]
+          `INSERT INTO media(id, filename, s3_key, region) VALUES($1, $2, $3, $4) RETURNING *`,
+          [id, req.file.originalname, fileKey, REGION]
         );
 
-        res.json({ message: '✅ File uploaded successfully', data: result.rows[0] });
+        const url = `${AppConfig.cloudfront_url}/${fileKey}`;
+
+        res.status(201).json({
+          message: '✅ File uploaded successfully',
+          media: {
+            id,
+            filename: req.file.originalname,
+            url,
+            created_at: result.rows[0].created_at
+          }
+        });
       } catch (err) {
         console.error('❌ Upload failed:', err);
         res.status(500).json({ error: 'Upload failed' });
       }
     });
 
-    // Fetch metadata (READ)
-    app.get('/media', async (req, res) => {
+    // --------------------------
+    // GET /api/media — List all
+    // --------------------------
+    app.get('/api/media', async (req, res) => {
       try {
         const result = await runReaderQuery('SELECT * FROM media ORDER BY created_at DESC');
-        res.json(result.rows);
+        const media = result.rows.map(m => ({
+          id: m.id,
+          filename: m.filename,
+          url: `${AppConfig.cloudfront_url}/${m.s3_key}`,
+          created_at: m.created_at
+        }));
+        res.json({ count: media.length, media });
       } catch (err) {
         console.error('❌ Fetch media failed:', err);
         res.status(500).json({ error: 'Failed to fetch media' });
       }
     });
 
-    // Download media (READ)
-    app.get('/media/:key', async (req, res) => {
-      try {
-        const key = req.params.key;
-        const localBucket = REGION === 'us-east-1' ? S3_BUCKET_PRIMARY : S3_BUCKET_SECONDARY;
 
-        const data = await s3.getObject({ Bucket: localBucket, Key: key }).promise();
-        res.setHeader('Content-Type', data.ContentType);
-        res.send(data.Body);
-      } catch (err) {
-        console.error('❌ File not found:', err);
-        res.status(404).json({ error: 'File not found' });
-      }
-    });
 
     // Start Server
     const PORT = process.env.PORT || 5000;
     app.listen(PORT, () => {
-      console.log(`🚀 Server running in ${REGION} region on port ${PORT}`);
+      console.log(`🚀 Content Service running in ${REGION} on port ${PORT}`);
+
     });
 
   } catch (err) {

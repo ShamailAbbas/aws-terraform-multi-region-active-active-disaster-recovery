@@ -1,114 +1,211 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Multi-Region Media App</title>
+  <meta charset="UTF-8" />
+  <title>Media Library</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    body { font-family: Arial, sans-serif; margin: 20px; }
-    h1 { color: #2c3e50; }
-    input, button { margin: 5px 0; padding: 5px; }
-    .media-list { margin-top: 20px; }
-    .media-item { margin-bottom: 10px; }
+    body {
+      font-family: "Segoe UI", Roboto, sans-serif;
+      background-color: #f4f7fa;
+      color: #333;
+      margin: 0;
+      padding: 0;
+    }
+
+    header {
+      background: #0d6efd;
+      color: white;
+      padding: 16px 30px;
+      text-align: center;
+      font-size: 1.5rem;
+      font-weight: 600;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+    }
+
+    main {
+      max-width: 900px;
+      margin: 30px auto;
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+    }
+
+    form {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 25px;
+    }
+
+    input[type="file"] {
+      flex: 1;
+      padding: 8px;
+      border: 2px solid #ddd;
+      border-radius: 8px;
+      font-size: 0.95rem;
+    }
+
+    button {
+      background: #0d6efd;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 20px;
+      font-size: 1rem;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    button:hover {
+      background: #0b5ed7;
+    }
+
+    .status {
+      margin-bottom: 20px;
+      color: #555;
+      font-size: 0.95rem;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 20px;
+    }
+
+    .media-card {
+      border: 1px solid #ddd;
+      border-radius: 10px;
+      overflow: hidden;
+      background: #fff;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    .media-card:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 3px 8px rgba(0, 0, 0, 0.12);
+    }
+
+    .media-card img,
+    .media-card video {
+      width: 100%;
+      height: 200px;
+      object-fit: cover;
+      display: block;
+      background: #eee;
+    }
+
+    .media-info {
+      padding: 10px 12px;
+      font-size: 0.9rem;
+      text-align: center;
+      color: #444;
+    }
+
+    footer {
+      text-align: center;
+      padding: 15px;
+      color: #777;
+      font-size: 0.85rem;
+      margin-top: 30px;
+    }
   </style>
 </head>
 <body>
-  <h1>Multi-Region Media App</h1>
+  <header>📦 Media Library</header>
 
-  <h2>Upload Media</h2>
-  <input type="file" id="fileInput">
-  <button onclick="uploadMedia()">Upload</button>
+  <main>
+    <form id="uploadForm">
+      <input type="file" id="fileInput" accept="image/*,video/*" required />
+      <button type="submit">Upload</button>
+    </form>
+    <div class="status" id="status">Loading media...</div>
 
-  <h2>Media List</h2>
-  <button onclick="fetchMedia()">Refresh List</button>
-  <div class="media-list" id="mediaList"></div>
+    <div class="grid" id="mediaGrid"></div>
+  </main>
 
-  <h2>Sessions (DynamoDB)</h2>
-  <input type="text" id="sessionData" placeholder="Session Data JSON">
-  <button onclick="createSession()">Create Session</button>
-  <input type="text" id="sessionId" placeholder="Session ID">
-  <button onclick="getSession()">Get Session</button>
-  <pre id="sessionResult"></pre>
+  <footer>
+    Content Service &copy; 2025
+  </footer>
 
   <script>
 
-    // const API_BASE = 'http://multi-region-app-primary-alb-947842894.us-east-1.elb.amazonaws.com';
-
-    const API_BASE = 'http://multi-region-app-secondary-alb-1918374281.us-east-2.elb.amazonaws.com';
+    const API_BASE = ''
 
 
-    async function uploadMedia() {
-      const fileInput = document.getElementById('fileInput');
-      if (!fileInput.files[0]) {
-        alert('Select a file first!');
-        return;
-      }
-      const formData = new FormData();
-      formData.append('file', fileInput.files[0]);
 
-      const res = await fetch(`${API_BASE}/media`, {
-        method: 'POST',
-        body: formData
-      });
 
-      const data = await res.json();
-      alert(data.message || 'Uploaded!');
-      fetchMedia();
-    }
 
+    const mediaGrid = document.getElementById('mediaGrid');
+    const status = document.getElementById('status');
+    const uploadForm = document.getElementById('uploadForm');
+    const fileInput = document.getElementById('fileInput');
+
+    // -------------------
+    // Fetch and Render Media
+    // -------------------
     async function fetchMedia() {
-      const res = await fetch(`${API_BASE}/media`);
-      const media = await res.json();
-      const listDiv = document.getElementById('mediaList');
-      listDiv.innerHTML = '';
-      media.forEach(item => {
-        const div = document.createElement('div');
-        div.className = 'media-item';
-        div.innerHTML = `
-          <strong>${item.filename}</strong> (Region: ${item.region})
-          <button onclick="downloadMedia('${item.s3_key}')">Download</button>
-        `;
-        listDiv.appendChild(div);
-      });
+      try {
+        status.textContent = 'Loading media...';
+        const res = await fetch(`${API_BASE}/api/media`);
+        const data = await res.json();
+        if (!data.media || data.media.length === 0) {
+          status.textContent = 'No media found.';
+          mediaGrid.innerHTML = '';
+          return;
+        }
+
+        status.textContent = `Showing ${data.count} media files`;
+        mediaGrid.innerHTML = data.media.map(item => `
+          <div class="media-card">
+            ${
+              item.url.match(/\.(mp4|webm|ogg)$/i)
+                ? `<video controls src="${item.url}"></video>`
+                : `<img src="${item.url}" alt="${item.filename}" />`
+            }
+            <div class="media-info">${item.filename}</div>
+          </div>
+        `).join('');
+      } catch (err) {
+        console.error('Error fetching media:', err);
+        status.textContent = 'Failed to load media.';
+      }
     }
 
-    async function downloadMedia(key) {
-      const res = await fetch(`${API_BASE}/media/${key}`);
-      if (!res.ok) return alert('Failed to download');
-      const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = key.split('-').slice(1).join('-'); // remove UUID prefix
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(url);
-    }
+    // -------------------
+    // Upload Media
+    // -------------------
+    uploadForm.addEventListener('submit', async e => {
+      e.preventDefault();
+      const file = fileInput.files[0];
+      if (!file) return alert('Please select a file');
 
-    async function createSession() {
-      const dataInput = document.getElementById('sessionData').value;
-      let json;
-      try { json = JSON.parse(dataInput); } catch(e){ return alert('Invalid JSON'); }
+      status.textContent = 'Uploading...';
+      const formData = new FormData();
+      formData.append('file', file);
 
-      const res = await fetch(`${API_BASE}/session`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(json)
-      });
-      const data = await res.json();
-      alert(`Session created: ${data.sessionId}`);
-    }
+      try {
+        const res = await fetch(`${API_BASE}/api/media`, {
+          method: 'POST',
+          body: formData
+        });
+        const data = await res.json();
+        if (res.ok) {
+          status.textContent = `✅ Uploaded: ${data.media.filename}`;
+          fileInput.value = '';
+          fetchMedia();
+        } else {
+          status.textContent = '❌ Upload failed: ' + (data.error || 'Unknown error');
+        }
+      } catch (err) {
+        console.error('Upload error:', err);
+        status.textContent = '❌ Upload failed.';
+      }
+    });
 
-    async function getSession() {
-      const id = document.getElementById('sessionId').value;
-      if (!id) return alert('Enter session ID');
-      const res = await fetch(`${API_BASE}/session/${id}`);
-      const data = await res.json();
-      document.getElementById('sessionResult').textContent = JSON.stringify(data, null, 2);
-    }
-
-    // Initial fetch
     fetchMedia();
   </script>
 </body>
