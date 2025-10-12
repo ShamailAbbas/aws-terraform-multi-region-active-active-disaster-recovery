@@ -75,14 +75,24 @@ async function initDbConnections() {
   // Close existing pools if any
   if (dbPool) await dbPool.end().catch(() => {});
 
-
+if(REGION=='us-east-1'){
   dbPool = new Pool({
-    host: creds.db_global_cluster_endpoint,
+    host: creds.db_primary_cluster_endpoint,
     user: creds.db_username,
     password: creds.db_password,
     database: creds.db_name,
     port: 5432,
   });
+}else{
+    dbPool = new Pool({
+    host: creds.db_secondary_cluster_endpoint,
+    user: creds.db_username,
+    password: creds.db_password,
+    database: creds.db_name,
+    port: 5432,
+  });
+}
+
 
 
 
