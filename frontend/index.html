@@ -82,6 +82,7 @@
       overflow: hidden;
       background: #fff;
       transition: transform 0.2s, box-shadow 0.2s;
+      position: relative;
     }
 
     .media-card:hover {
@@ -105,6 +106,22 @@
       color: #444;
     }
 
+    .delete-btn {
+      background: #dc3545;
+      border: none;
+      color: white;
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      margin-top: 8px;
+      transition: background 0.2s;
+    }
+
+    .delete-btn:hover {
+      background: #bb2d3b;
+    }
+
     footer {
       text-align: center;
       padding: 15px;
@@ -115,15 +132,12 @@
   </style>
 </head>
 <body>
-  <!-- <header>📦 Media Library</header> -->
-
   <main>
     <form id="uploadForm">
       <input type="file" id="fileInput" accept="image/*,video/*" required />
       <button type="submit">Upload</button>
     </form>
     <div class="status" id="status">Loading media...</div>
-
     <div class="grid" id="mediaGrid"></div>
   </main>
 
@@ -132,15 +146,8 @@
   </footer>
 
   <script>
-
-    const API_BASE = 'http://multi-region-app-primary-alb-1228095517.us-east-1.elb.amazonaws.com'
-
-
-    // const API_BASE = 'http://multi-region-app-secondary-alb-408077139.us-east-2.elb.amazonaws.com'
-
-
-
-
+    const API_BASE = 'http://multi-region-app-primary-alb-1228095517.us-east-1.elb.amazonaws.com';
+    // const API_BASE = 'http://multi-region-app-secondary-alb-408077139.us-east-2.elb.amazonaws.com';
 
     const mediaGrid = document.getElementById('mediaGrid');
     const status = document.getElementById('status');
@@ -155,6 +162,7 @@
         status.textContent = 'Loading media...';
         const res = await fetch(`${API_BASE}/api/media`);
         const data = await res.json();
+
         if (!data.media || data.media.length === 0) {
           status.textContent = 'No media found.';
           mediaGrid.innerHTML = '';
@@ -162,6 +170,7 @@
         }
 
         status.textContent = `Showing ${data.count} media files`;
+
         mediaGrid.innerHTML = data.media.map(item => `
           <div class="media-card">
             ${
@@ -169,9 +178,13 @@
                 ? `<video controls src="${item.url}"></video>`
                 : `<img src="${item.url}" alt="${item.filename}" />`
             }
-            <div class="media-info">${item.filename}</div>
+            <div class="media-info">
+              ${item.filename}<br/>
+              <button class="delete-btn" onclick="deleteMedia('${item.id}', '${item.filename}')">🗑️ Delete</button>
+            </div>
           </div>
         `).join('');
+
       } catch (err) {
         console.error('Error fetching media:', err);
         status.textContent = 'Failed to load media.';
@@ -209,6 +222,31 @@
       }
     });
 
+    // -------------------
+    // Delete Media
+    // -------------------
+    async function deleteMedia(id, filename) {
+      if (!confirm(`Are you sure you want to delete "${filename}"?`)) return;
+
+      status.textContent = `Deleting "${filename}"...`;
+
+      try {
+        const res = await fetch(`${API_BASE}/api/media/${id}`, { method: 'DELETE' });
+        const data = await res.json();
+
+        if (res.ok) {
+          status.textContent = `🗑️ Deleted: ${filename}`;
+          fetchMedia();
+        } else {
+          status.textContent = '❌ Delete failed: ' + (data.error || 'Unknown error');
+        }
+      } catch (err) {
+        console.error('Delete error:', err);
+        status.textContent = '❌ Delete failed.';
+      }
+    }
+
+    // Initial Load
     fetchMedia();
   </script>
 </body>

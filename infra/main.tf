@@ -45,6 +45,21 @@ resource "aws_subnet" "primary_private_b" {
   availability_zone = "${var.primary_region}b"
   tags              = { Name = "${var.project_name}-primary-private-b" }
 }
+resource "aws_subnet" "primary_private_c" {
+  provider          = aws.primary
+  vpc_id            = aws_vpc.primary_vpc.id
+  cidr_block        = "10.0.5.0/24"
+  availability_zone = "${var.primary_region}a"
+  tags              = { Name = "${var.project_name}-primary-private-c" }
+}
+
+resource "aws_subnet" "primary_private_d" {
+  provider          = aws.primary
+  vpc_id            = aws_vpc.primary_vpc.id
+  cidr_block        = "10.0.6.0/24"
+  availability_zone = "${var.primary_region}b"
+  tags              = { Name = "${var.project_name}-primary-private-d" }
+}
 
 # --- INTERNET GATEWAY / ROUTE TABLES ---
 resource "aws_internet_gateway" "primary_igw" {
@@ -115,6 +130,17 @@ resource "aws_route_table_association" "primary_private_a_assoc" {
 resource "aws_route_table_association" "primary_private_b_assoc" {
   provider       = aws.primary
   subnet_id      = aws_subnet.primary_private_b.id
+  route_table_id = aws_route_table.primary_private_rt.id
+}
+resource "aws_route_table_association" "primary_private_c_assoc" {
+  provider       = aws.primary
+  subnet_id      = aws_subnet.primary_private_c.id
+  route_table_id = aws_route_table.primary_private_rt.id
+}
+
+resource "aws_route_table_association" "primary_private_d_assoc" {
+  provider       = aws.primary
+  subnet_id      = aws_subnet.primary_private_d.id
   route_table_id = aws_route_table.primary_private_rt.id
 }
 
@@ -253,7 +279,7 @@ resource "aws_rds_global_cluster" "global_db" {
 resource "aws_db_subnet_group" "primary_db_subnet" {
   provider   = aws.primary
   name       = "${var.project_name}-primary-dbsubnet"
-  subnet_ids = [aws_subnet.primary_private_a.id, aws_subnet.primary_private_b.id]
+  subnet_ids = [aws_subnet.primary_private_c.id, aws_subnet.primary_private_d.id]
 }
 
 resource "aws_rds_cluster" "primary_cluster" {
@@ -302,6 +328,8 @@ resource "aws_launch_template" "primary_backend" {
     name = aws_iam_instance_profile.ec2_profile.name
   }
   vpc_security_group_ids = [aws_security_group.primary_sg.id]
+
+  key_name = aws_key_pair.primary_region_ec2_key.key_name
 
   user_data = base64encode(<<EOF
 #!/bin/bash
@@ -552,4 +580,49 @@ resource "aws_s3_bucket_replication_configuration" "primary_to_secondary" {
   }
 
   depends_on = [aws_s3_bucket_versioning.primary_versioning]
+}
+
+
+
+
+# -----------------------
+# Key Pair
+# -----------------------
+resource "tls_private_key" "primary_region_ec2_key" {
+  algorithm = "RSA"
+  rsa_bits  = 4096
+}
+
+resource "aws_key_pair" "primary_region_ec2_key" {
+  key_name   = "${var.project_name}-primary-region-ssh-key"
+  public_key = tls_private_key.primary_region_ec2_key.public_key_openssh
+}
+
+# Optional: Save private key locally
+resource "local_file" "private_key" {
+  content         = tls_private_key.primary_region_ec2_key.private_key_pem
+  filename        = "${path.module}/../primary-region-ssh-key.pem"
+  file_permission = "0600"
+}
+
+# -----------------------
+# Bastion host EC2 Instance
+# -----------------------
+resource "aws_instance" "bastion" {
+  ami                         = var.ami_primary
+  instance_type               = var.instance_type
+  subnet_id                   = aws_subnet.primary_public_a.id
+  vpc_security_group_ids      = [aws_security_group.secondary_sg.id]
+  associate_public_ip_address = true
+  key_name                    = aws_key_pair.primary_region_ec2_key.key_name
+  tags                        = { Name = "${var.project_name}-bastion" }
+
+  user_data = <<-EOF
+              #!/bin/bash
+              apt-get update -y
+              apt-get upgrade -y
+              apt-get install git curl build-essential -y
+              curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
+              sudo apt-get install -y nodejs
+              EOF
 }

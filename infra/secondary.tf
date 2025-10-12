@@ -47,6 +47,22 @@ resource "aws_subnet" "secondary_private_b" {
   tags              = { Name = "${var.project_name}-secondary-private-b" }
 }
 
+resource "aws_subnet" "secondary_private_c" {
+  provider          = aws.secondary
+  vpc_id            = aws_vpc.secondary_vpc.id
+  cidr_block        = "10.1.5.0/24"
+  availability_zone = "${var.secondary_region}a"
+  tags              = { Name = "${var.project_name}-secondary-private-c" }
+}
+
+resource "aws_subnet" "secondary_private_d" {
+  provider          = aws.secondary
+  vpc_id            = aws_vpc.secondary_vpc.id
+  cidr_block        = "10.1.6.0/24"
+  availability_zone = "${var.secondary_region}b"
+  tags              = { Name = "${var.project_name}-secondary-private-d" }
+}
+
 # --- INTERNET GATEWAY / ROUTE TABLES ---
 
 resource "aws_internet_gateway" "secondary_igw" {
@@ -121,6 +137,17 @@ resource "aws_route_table_association" "secondary_private_b_assoc" {
   subnet_id      = aws_subnet.secondary_private_b.id
   route_table_id = aws_route_table.secondary_private_rt.id
 }
+resource "aws_route_table_association" "secondary_private_c_assoc" {
+  provider       = aws.secondary
+  subnet_id      = aws_subnet.secondary_private_c.id
+  route_table_id = aws_route_table.secondary_private_rt.id
+}
+
+resource "aws_route_table_association" "secondary_private_d_assoc" {
+  provider       = aws.secondary
+  subnet_id      = aws_subnet.secondary_private_d.id
+  route_table_id = aws_route_table.secondary_private_rt.id
+}
 
 
 # --- SECURITY GROUP ---
@@ -176,7 +203,7 @@ resource "aws_security_group" "secondary_sg" {
 resource "aws_db_subnet_group" "secondary_db_subnet" {
   provider   = aws.secondary
   name       = "${var.project_name}-secondary-dbsubnet"
-  subnet_ids = [aws_subnet.secondary_private_a.id, aws_subnet.secondary_private_b.id]
+  subnet_ids = [aws_subnet.secondary_private_c.id, aws_subnet.secondary_private_d.id]
 }
 
 resource "aws_rds_cluster" "secondary_cluster" {
@@ -233,6 +260,7 @@ resource "aws_launch_template" "secondary_backend" {
   iam_instance_profile {
     name = aws_iam_instance_profile.ec2_profile.name
   }
+  key_name = aws_key_pair.secondary_region_ec2_key.key_name
 
   user_data = base64encode(<<EOF
 #!/bin/bash
@@ -337,3 +365,44 @@ resource "aws_lb_listener" "secondary_listener" {
 
 
 
+# -----------------------
+# Key Pair
+# -----------------------
+resource "tls_private_key" "secondary_region_ec2_key" {
+  algorithm = "RSA"
+  rsa_bits  = 4096
+}
+
+resource "aws_key_pair" "secondary_region_ec2_key" {
+  key_name   = "${var.project_name}-secondary-region-ssh-key"
+  public_key = tls_private_key.secondary_region_ec2_key.public_key_openssh
+}
+
+# Optional: Save private key locally
+resource "local_file" "private_key" {
+  content         = tls_private_key.secondary_region_ec2_key.private_key_pem
+  filename        = "${path.module}/../secondary-region-ssh-key.pem"
+  file_permission = "0600"
+}
+
+# -----------------------
+# Bastion host EC2 Instance
+# -----------------------
+resource "aws_instance" "bastion" {
+  ami                         = var.ami_secondary
+  instance_type               = var.instance_type
+  subnet_id                   = aws_subnet.secondary_public_a.id
+  vpc_security_group_ids      = [aws_security_group.secondary_sg.id]
+  associate_public_ip_address = true
+  key_name                    = aws_key_pair.secondary_region_ec2_key.key_name
+  tags                        = { Name = "${var.project_name}-bastion" }
+
+  user_data = <<-EOF
+              #!/bin/bash
+              apt-get update -y
+              apt-get upgrade -y
+              apt-get install git curl build-essential -y
+              curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
+              sudo apt-get install -y nodejs
+              EOF
+}

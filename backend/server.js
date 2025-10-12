@@ -214,6 +214,46 @@ async function initApp() {
       }
     });
 
+    // Delete
+
+    // Delete
+app.delete('/api/media/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    // 1️⃣ Find media entry
+    const result = await runQuery('SELECT * FROM media WHERE id = $1', [id]);
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Media not found' });
+    }
+
+    const media = result.rows[0];
+
+    // 2️⃣ Delete from S3
+    await s3
+      .deleteObject({
+        Bucket: AppConfig.main_s3_bucket,
+        Key: media.s3_key,
+      })
+      .promise();
+
+    // 3️⃣ Delete from DB
+    await runQuery('DELETE FROM media WHERE id = $1', [id]);
+
+    res.json({
+      message: '🗑️ Media deleted successfully',
+      deleted: {
+        id: media.id,
+        filename: media.filename,
+      },
+    });
+  } catch (err) {
+    console.error('❌ Delete failed:', err);
+    res.status(500).json({ error: 'Failed to delete media' });
+  }
+});
+
+
     // Start Server
     const PORT = process.env.PORT || 5000;
     app.listen(PORT, () => console.log(`🚀 Running in ${REGION} on port ${PORT}`));
