@@ -20,8 +20,8 @@ let s3 = new AWS.S3();
 const upload = multer({ storage: multer.memoryStorage() });
 
 let AppConfig = null;
-let writerPool = null;
-let readerPool = null;
+let dbPool = null;
+
 let lastFetchTime = 0;
 const SECRET_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -46,6 +46,7 @@ async function fetchSecrets(force = false) {
     const bucketChanged = AppConfig.main_s3_bucket !== newConfig.main_s3_bucket;
     const dbChanged =
       AppConfig.db_password !== newConfig.db_password ||
+      AppConfig.db_global_cluster_endpoint !== newConfig.db_global_cluster_endpoint ||
       AppConfig.db_primary_cluster_endpoint !== newConfig.db_primary_cluster_endpoint ||
       AppConfig.db_secondary_cluster_endpoint !== newConfig.db_secondary_cluster_endpoint;
 
@@ -72,27 +73,18 @@ async function initDbConnections() {
   const creds = await fetchSecrets(true);
 
   // Close existing pools if any
-  if (writerPool) await writerPool.end().catch(() => {});
-  if (readerPool) await readerPool.end().catch(() => {});
+  if (dbPool) await dbPool.end().catch(() => {});
 
-  writerPool = new Pool({
-    host: creds.db_primary_cluster_endpoint,
+
+  dbPool = new Pool({
+    host: creds.db_global_cluster_endpoint,
     user: creds.db_username,
     password: creds.db_password,
     database: creds.db_name,
     port: 5432,
   });
 
-  readerPool = new Pool({
-    host:
-      REGION === 'us-east-1'
-        ? creds.db_primary_cluster_endpoint
-        : creds.db_secondary_cluster_endpoint,
-    user: creds.db_username,
-    password: creds.db_password,
-    database: creds.db_name,
-    port: 5432,
-  });
+
 
   console.log('✅ Database connections ready');
 }
@@ -114,25 +106,17 @@ function startSecretRefresher() {
 // -----------------------------------------------------
 // DB Query Wrappers
 // -----------------------------------------------------
-async function runWriterQuery(query, params) {
+async function runQuery(query, params) {
   try {
-    return await writerPool.query(query, params);
+    return await dbPool.query(query, params);
   } catch (err) {
-    console.error('❌ Writer DB error:', err.message);
+    console.error('❌ DB error:', err.message);
     await initDbConnections();
-    return writerPool.query(query, params);
+    return dbPool.query(query, params);
   }
 }
 
-async function runReaderQuery(query, params) {
-  try {
-    return await readerPool.query(query, params);
-  } catch (err) {
-    console.error('⚠️ Reader DB error:', err.message);
-    await initDbConnections();
-    return readerPool.query(query, params);
-  }
-}
+
 
 // -----------------------------------------------------
 // Initialize App
@@ -144,7 +128,7 @@ async function initApp() {
     startSecretRefresher();
 
     // Ensure table exists
-    await runWriterQuery(`
+    await runQuery(`
       CREATE TABLE IF NOT EXISTS media (
         id UUID PRIMARY KEY,
         filename TEXT NOT NULL,
@@ -176,7 +160,7 @@ async function initApp() {
           })
           .promise();
 
-        const result = await runWriterQuery(
+        const result = await runQuery(
           `INSERT INTO media(id, filename, s3_key, region) VALUES($1, $2, $3, $4) RETURNING *`,
           [id, req.file.originalname, fileKey, REGION]
         );
@@ -200,7 +184,7 @@ async function initApp() {
     // List
     app.get('/api/media', async (req, res) => {
       try {
-        const result = await runReaderQuery('SELECT * FROM media ORDER BY created_at DESC');
+        const result = await runQuery('SELECT * FROM media ORDER BY created_at DESC');
         const media = result.rows.map((m) => ({
           id: m.id,
           filename: m.filename,
