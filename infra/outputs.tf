@@ -8,18 +8,23 @@
 # }
 
 output "primary_alb_dns" {
-  value       = "https://${aws_lb.primary_alb.dns_name}"
+  value       = "http://${aws_lb.primary_alb.dns_name}"
   description = "Primary region ALB DNS"
 }
 
 output "secondary_alb_dns" {
-  value       = "https://${aws_lb.secondary_alb.dns_name}"
+  value       = "http://${aws_lb.secondary_alb.dns_name}"
   description = "Secondary region ALB DNS"
 }
 
-output "cdn_url" {
-  value = "https://${aws_cloudfront_distribution.cdn.domain_name}"
-}
+# output "cdn_url" {
+#   value = "https://${aws_cloudfront_distribution.cdn.domain_name}"
+# }
+
+# output "db_global_cluster_endpoint" {
+#   value       = aws_rds_global_cluster.global_db.endpoint
+#   description = "RDS global cluster endpoint"
+# }
 
 # output "primary_db_cluster_endpoint" {
 #   value       = aws_rds_cluster.primary_cluster.endpoint

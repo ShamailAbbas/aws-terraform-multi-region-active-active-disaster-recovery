@@ -74,6 +74,50 @@ resource "aws_route_table_association" "primary_public_b_assoc" {
   route_table_id = aws_route_table.primary_public_rt.id
 }
 
+# --- PRIVATE ROUTE TABLE ---
+resource "aws_route_table" "primary_private_rt" {
+  provider = aws.primary
+  vpc_id   = aws_vpc.primary_vpc.id
+  tags     = { Name = "${var.project_name}-primary-private-rt" }
+}
+
+# PRIMARY NAT GATEWAY
+resource "aws_eip" "primary_nat" {
+  provider = aws.primary
+  domain   = "vpc"
+}
+
+resource "aws_nat_gateway" "primary_nat" {
+  provider      = aws.primary
+  allocation_id = aws_eip.primary_nat.id
+  subnet_id     = aws_subnet.primary_public_a.id
+
+  tags = {
+    Name = "${var.project_name}-primary-nat"
+  }
+}
+
+# Update primary private route table to use NAT
+resource "aws_route" "primary_private_nat" {
+  provider               = aws.primary
+  route_table_id         = aws_route_table.primary_private_rt.id
+  destination_cidr_block = "0.0.0.0/0"
+  nat_gateway_id         = aws_nat_gateway.primary_nat.id
+}
+
+# --- Associate with private subnets ---
+resource "aws_route_table_association" "primary_private_a_assoc" {
+  provider       = aws.primary
+  subnet_id      = aws_subnet.primary_private_a.id
+  route_table_id = aws_route_table.primary_private_rt.id
+}
+
+resource "aws_route_table_association" "primary_private_b_assoc" {
+  provider       = aws.primary
+  subnet_id      = aws_subnet.primary_private_b.id
+  route_table_id = aws_route_table.primary_private_rt.id
+}
+
 # --- SECURITY GROUP ---
 resource "aws_security_group" "primary_sg" {
   provider = aws.primary
@@ -300,6 +344,27 @@ EOF
 
 }
 
+resource "aws_autoscaling_group" "primary_asg" {
+  provider         = aws.primary
+  desired_capacity = 2
+  max_size         = 5
+  min_size         = 2
+  launch_template {
+    id      = aws_launch_template.primary_backend.id
+    version = "$Latest"
+  }
+  vpc_zone_identifier = [aws_subnet.primary_private_a.id,
+  aws_subnet.primary_private_b.id]
+  target_group_arns = [aws_lb_target_group.primary_tg.arn]
+  depends_on        = [aws_lb_listener.primary_listener]
+
+  tag {
+    key                 = "Name"
+    value               = "${var.project_name}-primary-instance"
+    propagate_at_launch = true
+  }
+}
+
 resource "aws_lb" "primary_alb" {
   provider           = aws.primary
   name               = "${var.project_name}-primary-alb"
@@ -339,25 +404,7 @@ resource "aws_lb_listener" "primary_listener" {
   }
 }
 
-resource "aws_autoscaling_group" "primary_asg" {
-  provider         = aws.primary
-  desired_capacity = 2
-  max_size         = 5
-  min_size         = 2
-  launch_template {
-    id      = aws_launch_template.primary_backend.id
-    version = "$Latest"
-  }
-  vpc_zone_identifier = [aws_subnet.primary_public_a.id, aws_subnet.primary_public_b.id]
-  target_group_arns   = [aws_lb_target_group.primary_tg.arn]
-  depends_on          = [aws_lb_listener.primary_listener]
 
-  tag {
-    key                 = "Name"
-    value               = "${var.project_name}-primary-instance"
-    propagate_at_launch = true
-  }
-}
 
 
 
@@ -384,6 +431,7 @@ resource "aws_secretsmanager_secret_version" "app_secret_value" {
   secret_string = jsonencode({
     db_username                   = var.db_username
     db_password                   = var.db_password
+    db_global_cluster_endpoint    = aws_rds_global_cluster.global_db.endpoint
     db_primary_cluster_endpoint   = aws_rds_cluster.primary_cluster.endpoint
     db_secondary_cluster_endpoint = aws_rds_cluster.secondary_cluster.endpoint
     db_name                       = var.db_name

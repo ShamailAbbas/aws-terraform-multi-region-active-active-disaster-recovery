@@ -47,6 +47,8 @@ resource "aws_subnet" "secondary_private_b" {
   tags              = { Name = "${var.project_name}-secondary-private-b" }
 }
 
+# --- INTERNET GATEWAY / ROUTE TABLES ---
+
 resource "aws_internet_gateway" "secondary_igw" {
   provider = aws.secondary
   vpc_id   = aws_vpc.secondary_vpc.id
@@ -73,6 +75,55 @@ resource "aws_route_table_association" "secondary_assoc_b" {
   subnet_id      = aws_subnet.secondary_public_b.id
   route_table_id = aws_route_table.secondary_rt.id
 }
+
+
+# SECONDARY NAT GATEWAY
+resource "aws_eip" "secondary_nat" {
+  provider = aws.secondary
+  domain   = "vpc"
+}
+
+resource "aws_nat_gateway" "secondary_nat" {
+  provider      = aws.secondary
+  allocation_id = aws_eip.secondary_nat.id
+  subnet_id     = aws_subnet.secondary_public_a.id
+
+  tags = {
+    Name = "${var.project_name}-secondary-nat"
+  }
+}
+
+# Update secondary private route table to use NAT
+resource "aws_route" "secondary_private_nat" {
+  provider               = aws.secondary
+  route_table_id         = aws_route_table.secondary_private_rt.id
+  destination_cidr_block = "0.0.0.0/0"
+  nat_gateway_id         = aws_nat_gateway.secondary_nat.id
+}
+
+
+# --- PRIVATE ROUTE TABLE ---
+resource "aws_route_table" "secondary_private_rt" {
+  provider = aws.secondary
+  vpc_id   = aws_vpc.secondary_vpc.id
+  tags     = { Name = "${var.project_name}-secondary-private-rt" }
+}
+
+# --- Associate with private subnets ---
+resource "aws_route_table_association" "secondary_private_a_assoc" {
+  provider       = aws.secondary
+  subnet_id      = aws_subnet.secondary_private_a.id
+  route_table_id = aws_route_table.secondary_private_rt.id
+}
+
+resource "aws_route_table_association" "secondary_private_b_assoc" {
+  provider       = aws.secondary
+  subnet_id      = aws_subnet.secondary_private_b.id
+  route_table_id = aws_route_table.secondary_private_rt.id
+}
+
+
+# --- SECURITY GROUP ---
 
 resource "aws_security_group" "secondary_sg" {
   provider = aws.secondary
@@ -138,6 +189,8 @@ resource "aws_rds_cluster" "secondary_cluster" {
   skip_final_snapshot       = true
   global_cluster_identifier = aws_rds_global_cluster.global_db.id
   depends_on                = [aws_rds_cluster_instance.primary_instance_1]
+
+  enable_global_write_forwarding = true
 
   lifecycle {
     ignore_changes = [
@@ -221,6 +274,27 @@ EOF
 
 }
 
+resource "aws_autoscaling_group" "secondary_asg" {
+  provider         = aws.secondary
+  desired_capacity = 2
+  max_size         = 5
+  min_size         = 1
+  launch_template {
+    id      = aws_launch_template.secondary_backend.id
+    version = "$Latest"
+  }
+  vpc_zone_identifier = [aws_subnet.secondary_private_a.id,
+  aws_subnet.secondary_private_b.id]
+  target_group_arns = [aws_lb_target_group.secondary_tg.arn]
+  depends_on        = [aws_lb_listener.secondary_listener]
+
+  tag {
+    key                 = "Name"
+    value               = "${var.project_name}-secondary-instance"
+    propagate_at_launch = true
+  }
+}
+
 resource "aws_lb" "secondary_alb" {
   provider           = aws.secondary
   name               = "${var.project_name}-secondary-alb"
@@ -260,24 +334,6 @@ resource "aws_lb_listener" "secondary_listener" {
   }
 }
 
-resource "aws_autoscaling_group" "secondary_asg" {
-  provider         = aws.secondary
-  desired_capacity = 2
-  max_size         = 5
-  min_size         = 1
-  launch_template {
-    id      = aws_launch_template.secondary_backend.id
-    version = "$Latest"
-  }
-  vpc_zone_identifier = [aws_subnet.secondary_public_a.id, aws_subnet.secondary_public_b.id]
-  target_group_arns   = [aws_lb_target_group.secondary_tg.arn]
-  depends_on          = [aws_lb_listener.secondary_listener]
 
-  tag {
-    key                 = "Name"
-    value               = "${var.project_name}-secondary-instance"
-    propagate_at_launch = true
-  }
-}
 
 

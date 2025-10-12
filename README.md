@@ -4,6 +4,6 @@
 This repository provides Terraform configurations for setting up disaster recovery solutions on AWS. It enables automated infrastructure provisioning, backup strategies, and failover mechanisms to ensure business continuity.
 ---
 
-![Archetectural Diagram](image.jpg)
+![Archetectural Diagram](image.png)
 
 ---
