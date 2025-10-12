@@ -260,7 +260,7 @@ resource "aws_launch_template" "secondary_backend" {
   iam_instance_profile {
     name = aws_iam_instance_profile.ec2_profile.name
   }
-  # key_name = aws_key_pair.secondary_region_ec2_key.key_name
+  key_name = aws_key_pair.secondary_key.key_name
 
   user_data = base64encode(<<EOF
 #!/bin/bash

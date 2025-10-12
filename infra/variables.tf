@@ -10,5 +10,5 @@ variable "db_password" { default = "YourSecurePassword123!" }
 variable "instance_type" { default = "t3.micro" }
 variable "ami_primary" { default = "ami-0360c520857e3138f" }
 variable "ami_secondary" { default = "ami-0cfde0ea8edd312d4" }
-variable "app_secret_name" { default = "app-secret" }
+variable "app_secret_name" { default = "app-secrets" }
 
